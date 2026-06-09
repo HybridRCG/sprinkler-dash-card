@@ -1,0 +1,949 @@
+const CARD_VERSION = 7;
+const MAX_ZONES = 10;
+const DEFAULT_META_SLOTS = [
+  { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
+  { label:'Jojo Level',    icon:'water-well',         sensor1:'sensor.jojo_liters_left',                     sensor2:'sensor.jojo_tank_level_liquid_level', enabled:true },
+  { label:'Weather',       icon:'weather-partly-cloudy', sensor1:'weather.met_office_pretoria',              sensor2:'',                                    enabled:true },
+  { label:'Rain Predict',  icon:'cloud-question',     sensor1:'sensor.rain_status',                          sensor2:'sensor.rain_prediction_confidence',   enabled:true },
+];
+const DEFAULT_CONFIG = {
+  zones: [
+    { name:'Agter',        sw:'switch.sonoff_1001e74824_3', dur:'input_number.valve_1_time' },
+    { name:'Visitor',      sw:'switch.sonoff_1001e74824_2', dur:'input_number.valve_2_time' },
+    { name:'Jojo',         sw:'switch.sonoff_1001e74824_1', dur:'input_number.valve_3_time' },
+    { name:'Gras Voor',    sw:'switch.sonoff_1001e74905_1', dur:'input_number.valve_4_time' },
+    { name:'Gras Muur',    sw:'switch.sonoff_1001e74905_2', dur:'input_number.valve_5_time' },
+    { name:'Gras Huis',    sw:'switch.sonoff_1001e74905_3', dur:'input_number.valve_6_time' },
+    { name:'Visitor Voor', sw:'switch.sonoff_100230849a_1', dur:'input_number.valve_7_time' },
+    { name:'Blombak',      sw:'switch.sonoff_1001e74824_4', dur:'input_number.valve_8_time' },
+    { name:'Zone 9',       sw:'', dur:'' },
+    { name:'Zone 10',      sw:'', dur:'' },
+  ],
+  active_zones: 8,
+  schedule_entity: 'switch.schedule_sprinkler_scheduler',
+  rain_sensor: 'sensor.gw2000a_v2_1_8_event_rain_rate_piezo',
+  weather_entity: 'weather.met_office_pretoria',
+  nav_path: '/lovelace',
+  jojo_sensor: 'sensor.jojo_liters_left',
+  rain_threshold: 5,
+  jojo_low_pct: 35,
+  meta_slots: JSON.parse(JSON.stringify(DEFAULT_META_SLOTS)),
+};
+
+class SprinklerDashCardV2 extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode:'open' });
+    this._cfg = null;
+    this._hass = null;
+    this._built = false;
+    this._onTimes = {};
+    this._prevDurVals = {};
+    this._editingTime = false;
+    this._showConfig = false;
+    this._cfgDragSrc = null;
+    this._tickInterval = null;
+    this._days = ['mon','tue','wed','thu','fri','sat','sun'];
+    this._dayLabels = ['Mo','Tu','We','Th','Fr','Sa','Su'];
+    this._allEntities = [];
+    this._mdiIcons = [];
+    this._mdiLoaded = false;
+  }
+
+  setConfig(config) {
+    // merge: only fill missing keys from DEFAULT_CONFIG, never overwrite existing values
+    const merged = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+    for (const key of Object.keys(config)) merged[key] = config[key];
+    this._cfg = merged;
+    if (!Array.isArray(this._cfg.zones)) this._cfg.zones = JSON.parse(JSON.stringify(DEFAULT_CONFIG.zones));
+    while (this._cfg.zones.length < MAX_ZONES) {
+      const n = this._cfg.zones.length + 1;
+      this._cfg.zones.push({ name:'Zone '+n, sw:'', dur:'' });
+    }
+    this._cfg.active_zones = Math.min(MAX_ZONES, Math.max(1, this._cfg.active_zones || 8));
+    if (!Array.isArray(this._cfg.meta_slots)||this._cfg.meta_slots.length<4) {
+      this._cfg.meta_slots = JSON.parse(JSON.stringify(DEFAULT_META_SLOTS));
+    }
+    if (this._built) { this._built=false; this.shadowRoot.innerHTML=''; this._buildShell(); this._built=true; }
+  }
+
+  connectedCallback() { this._tickInterval = setInterval(()=>this._tick(), 1000); }
+  disconnectedCallback() { clearInterval(this._tickInterval); }
+
+  set hass(hass) {
+    this._hass = hass;
+    if (this._allEntities.length === 0) this._allEntities = Object.keys(hass.states).sort();
+    if (!this._mdiLoaded) this._loadMdiIcons();
+    if (!this._built) { this._buildShell(); this._built=true; }
+    this._update();
+  }
+
+  _loadMdiIcons() {
+    this._mdiLoaded = true; // prevent multiple fetches
+    fetch('https://raw.githubusercontent.com/Templarian/MaterialDesign/master/meta.json')
+      .then(r=>r.json())
+      .then(data=>{ this._mdiIcons = data.map(i=>i.name); })
+      .catch(()=>{ this._mdiIcons = []; });
+  }
+
+  _svc(domain, service, data) { this._hass.callService(domain, service, data); }
+  _activeZones() { return this._cfg.zones.slice(0, this._cfg.active_zones); }
+
+  _saveConfig(patch) {
+    // deep merge patch into cfg
+    for (const key of Object.keys(patch)) this._cfg[key] = patch[key];
+    const ev = new CustomEvent('config-changed', {
+      detail: { config: JSON.parse(JSON.stringify(this._cfg)) },
+      bubbles: true, composed: true
+    });
+    this.dispatchEvent(ev);
+  }
+
+  _allOff() {
+    const switches = this._activeZones().map(z=>z.sw).filter(Boolean);
+    if (switches.length) this._svc('switch','turn_off',{entity_id:switches});
+    this._activeZones().forEach((_,i)=>{ delete this._onTimes[i]; this._renderProgress(i,false,0,0); });
+  }
+
+  _startSchedule() { this._svc('script','turn_on',{entity_id:'script.sprinkler'}); }
+
+  _buildShell() {
+    this.shadowRoot.innerHTML = `<style>${this._css()}</style><ha-card id="root"></ha-card>`;
+    this.shadowRoot.getElementById('root').innerHTML = this._mainHtml();
+    this._bindMain();
+    this._buildZoneGrid();
+  }
+
+  _css() { return `
+    :host{display:block;font-family:var(--primary-font-family,sans-serif)}
+    *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+    ha-card{background:var(--card-background-color,#1c1c1c);border-radius:12px;overflow:hidden;border:1px solid var(--divider-color,rgba(255,255,255,0.08));box-shadow:var(--ha-card-box-shadow,none)}
+    .hdr{background:linear-gradient(135deg,#0a5c45 0%,#1a8a64 55%,#4dc49a 100%);padding:10px 12px}
+    .hdr-row1{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+    .hdr-title{display:flex;align-items:center;gap:7px;cursor:pointer;flex:1;min-width:0}
+    .hdr-title h2{margin:0;font-size:15px;font-weight:600;color:#fff;white-space:nowrap}
+    .hdr-title:hover h2{text-decoration:underline;text-underline-offset:2px}
+    .badge{background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.25);border-radius:20px;padding:2px 8px;font-size:11px;color:rgba(255,255,255,0.9);white-space:nowrap;flex-shrink:0}
+    .badge--active{background:rgba(255,220,80,0.25);border-color:rgba(255,220,80,0.5);color:#ffe566}
+    .cfg-btn{background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.2);border-radius:6px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:rgba(255,255,255,0.8);flex-shrink:0;transition:background .15s}
+    .cfg-btn:hover,.cfg-btn--active{background:rgba(255,255,255,0.25);border-color:rgba(255,255,255,0.5)}
+    .hdr-meta{display:grid;gap:4px 8px;margin-bottom:7px;min-height:0}
+    .hdr-meta--1{grid-template-columns:1fr}
+    .hdr-meta--2{grid-template-columns:1fr 1fr}
+    .hdr-meta--3{grid-template-columns:1fr 1fr 1fr}
+    .hdr-meta--4{grid-template-columns:1fr 1fr}
+    .hdr-meta--empty{display:none}
+    .hdr-meta-item{display:flex;align-items:center;gap:3px;font-size:11px;color:rgba(255,255,255,0.78);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    .hdr-btns{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    .hbtn{display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 8px;border-radius:8px;border:none;cursor:pointer;font-size:12px;font-weight:600;transition:opacity .15s,transform .1s}
+    .hbtn:active{transform:scale(0.97);opacity:.8}
+    .hbtn--stop{background:rgba(210,45,45,0.9);color:#fff}
+    .hbtn--start{background:rgba(255,255,255,0.92);color:#0a5c45}
+    .zones{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px}
+    .zone{border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);padding:8px 9px 7px;position:relative;overflow:hidden;transition:border-color .2s,background .2s}
+    .zone::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:rgba(255,255,255,0.06);transition:background .2s}
+    .zone--on{background:rgba(26,138,100,0.1);border-color:rgba(77,196,154,0.35)}
+    .zone--on::before{background:linear-gradient(90deg,#1a8a64,#4dc49a)}
+    .ztop{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+    .zseq{width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s}
+    .zseq--on{background:rgba(26,138,100,0.4);color:#4dc49a;border-color:rgba(77,196,154,0.4)}
+    .zname{flex:1;font-size:12px;font-weight:700;color:var(--primary-text-color,#f0f0f0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .zone--on .zname{color:#7de8c0}
+    .ztoggle{position:relative;width:30px;height:17px;border-radius:9px;background:rgba(255,255,255,0.12);cursor:pointer;flex-shrink:0;transition:background .25s}
+    .ztoggle--on{background:#1a8a64}
+    .ztoggle-thumb{position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:transform .25s;box-shadow:0 1px 3px rgba(0,0,0,0.4)}
+    .ztoggle--on .ztoggle-thumb{transform:translateX(13px)}
+    .zprog-track{height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;margin-bottom:4px}
+    .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width .9s linear}
+    .zstat{font-size:10px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:13px;margin-bottom:5px}
+    .zstat--on{color:#4dc49a}
+    .pulse{display:inline-block;width:5px;height:5px;border-radius:50%;background:#4dc49a;flex-shrink:0;animation:pulse 1.2s ease-in-out infinite}
+    @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}
+    .zdivider{height:1px;background:rgba(255,255,255,0.05);margin-bottom:5px}
+    .zdur-row{display:flex;align-items:center;gap:4px}
+    .zdur-lbl{display:none}
+    input[type=number].zdur-input{width:42px;padding:3px 4px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#eee);font-size:11px;font-weight:600;text-align:center;-moz-appearance:textfield}
+    input[type=number].zdur-input::-webkit-outer-spin-button,input[type=number].zdur-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
+    input[type=number].zdur-input:focus{outline:none;border-color:#1a8a64;background:rgba(26,138,100,0.15)}
+    .zdur-unit{font-size:10px;color:var(--secondary-text-color,#555);flex-shrink:0}
+    .zdur-btns{display:flex;gap:3px;margin-left:auto}
+    .zdur-btn{width:38px;height:19px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;transition:background .15s;padding:0}
+    .zdur-btn:hover{background:rgba(26,138,100,0.35);border-color:#1a8a64;color:#4dc49a}
+    .zdur-btn:active{transform:scale(0.93)}
+    .sched-wrap{margin:0 6px 6px;border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);overflow:hidden}
+    .sched-hdr{display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,0.05)}
+    .sched-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#777);flex:1}
+    .stoggle{position:relative;width:30px;height:17px;border-radius:9px;background:rgba(255,255,255,0.12);cursor:pointer;flex-shrink:0;transition:background .25s}
+    .stoggle--on{background:#1a8a64}
+    .stoggle-thumb{position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:transform .25s;box-shadow:0 1px 3px rgba(0,0,0,0.4)}
+    .stoggle--on .stoggle-thumb{transform:translateX(13px)}
+    .sched-body{padding:8px 10px;display:flex;align-items:center;gap:8px}
+    .sched-days{display:flex;gap:3px;flex:1;flex-wrap:wrap}
+    .sday{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;cursor:pointer;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:var(--secondary-text-color,#666);transition:all .15s;flex-shrink:0;user-select:none}
+    .sday--on{background:rgba(26,138,100,0.35);border-color:rgba(77,196,154,0.5);color:#4dc49a}
+    .sched-time-wrap{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
+    .sched-time{font-size:18px;font-weight:700;color:var(--primary-text-color,#f0f0f0);cursor:pointer;letter-spacing:.02em;line-height:1;padding:2px 4px;border-radius:5px;border:1px solid transparent;transition:border-color .15s,background .15s;min-width:56px;text-align:right}
+    .sched-time:hover{border-color:rgba(77,196,154,0.4);background:rgba(26,138,100,0.1)}
+    .sched-time input[type=time]{width:70px;font-size:14px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:2px 4px;outline:none;text-align:center}
+    .sched-next{font-size:10px;color:var(--secondary-text-color,#666)}
+    .sched-next--on{color:#4dc49a}
+    /* CONFIG PANEL — no overflow:hidden so dropdowns escape */
+    .cfg-panel{display:none;border-top:1px solid rgba(255,255,255,0.06)}
+    .cfg-panel--open{display:block}
+    .cfg-section{padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.05)}
+    .cfg-section:last-child{border-bottom:none}
+    .cfg-label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#666);margin-bottom:6px;font-weight:600}
+    .cfg-zone-count{display:flex;align-items:center;gap:8px}
+    .cfg-count-btn{width:26px;height:26px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#ccc);font-size:16px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:background .15s;flex-shrink:0}
+    .cfg-count-btn:hover{background:rgba(26,138,100,0.3);border-color:#1a8a64;color:#4dc49a}
+    .cfg-count-val{font-size:16px;font-weight:700;color:var(--primary-text-color,#eee);min-width:22px;text-align:center}
+    .cfg-count-max{font-size:10px;color:var(--secondary-text-color,#666)}
+    /* zone list — NO overflow hidden */
+    .cfg-zone-list{display:flex;flex-direction:column;gap:0;margin-top:6px}
+    .cfg-zone-item{border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);margin-bottom:4px;border-radius:7px;transition:border-color .15s;position:relative}
+    .cfg-zone-item--inactive{opacity:.45}
+    .cfg-zone-item--drag-over{border-color:rgba(77,196,154,0.6)!important;background:rgba(26,138,100,0.12)}
+    .cfg-zone-item--dragging{opacity:.3}
+    .cfg-zone-row1{display:flex;align-items:center;gap:5px;padding:6px 7px 3px}
+    .cfg-zone-row2{display:flex;align-items:center;gap:5px;padding:0 7px 6px}
+    .drag-handle{color:var(--secondary-text-color,#555);flex-shrink:0;font-size:14px;line-height:1;cursor:grab;user-select:none;padding:0 2px}
+    .cfg-zone-seq{width:16px;height:16px;border-radius:50%;background:rgba(26,138,100,0.3);color:#4dc49a;font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0}
+    .cfg-zone-seq--inactive{background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555)}
+    .cfg-zone-name{flex:1;min-width:0;padding:3px 6px;border-radius:5px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.04);color:var(--primary-text-color,#eee);font-size:11px;font-weight:600;outline:none}
+    .cfg-zone-name:focus{border-color:#1a8a64;background:rgba(26,138,100,0.12)}
+    .cfg-row2-lbl{font-size:9px;text-transform:uppercase;color:var(--secondary-text-color,#555);flex-shrink:0;width:100px;padding-left:4px}
+    .cfg-zone-row2{display:flex;align-items:center;gap:5px;padding:0 7px 5px}
+    /* entity search — z-index escape via fixed positioning */
+    .es-wrap{position:relative;flex:1;min-width:0}
+    .es-input{width:100%;padding:3px 6px;border-radius:5px;border:1px solid rgba(255,255,255,0.08);background:rgba(255,255,255,0.04);color:var(--primary-text-color,#eee);font-size:10px;outline:none;font-family:monospace}
+    .es-input:focus{border-color:#1a8a64;background:rgba(26,138,100,0.12)}
+    .es-dropdown{position:fixed;z-index:9999;background:#1a1a1a;border:1px solid rgba(77,196,154,0.5);border-radius:7px;max-height:160px;overflow-y:auto;display:none;box-shadow:0 6px 20px rgba(0,0,0,0.7);min-width:200px}
+    .es-dropdown--open{display:block}
+    .es-opt{padding:5px 10px;font-size:10px;font-family:monospace;color:#ddd;cursor:pointer;transition:background .1s;white-space:nowrap}
+    .es-opt:hover{background:rgba(26,138,100,0.3);color:#4dc49a}
+    /* settings */
+    .cfg-settings-list{display:flex;flex-direction:column;gap:5px;margin-top:4px}
+    .cfg-slot-header{display:flex;align-items:center;gap:7px;margin-bottom:5px}
+    .cfg-slot-cb{width:16px;height:16px;accent-color:#1a8a64;cursor:pointer;flex-shrink:0}
+    .cfg-slot-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--secondary-text-color,#666);flex:1}
+    .cfg-slot-title--enabled{color:#4dc49a}
+    .icon-preview{width:24px;height:24px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,0.06);border-radius:5px;flex-shrink:0;--mdc-icon-size:14px}
+    .icon-preview--set{background:rgba(26,138,100,0.2)}
+    .cfg-field-row{display:flex;align-items:center;gap:6px}
+    .cfg-field-lbl{font-size:10px;color:var(--secondary-text-color,#888);flex-shrink:0;width:72px}
+    .cfg-field-input{flex:1;min-width:0;padding:4px 7px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#eee);font-size:11px;outline:none}
+    .cfg-field-input:focus{border-color:#1a8a64;background:rgba(26,138,100,0.12)}
+    /* bottom buttons */
+    .cfg-btns-row{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px 12px}
+    .cfg-action-btn{padding:7px;border-radius:7px;border:none;font-size:11px;font-weight:600;cursor:pointer;transition:opacity .15s}
+    .cfg-action-btn--close{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);color:var(--secondary-text-color,#999)}
+    .cfg-action-btn--close:hover{background:rgba(255,255,255,0.1)}
+    .cfg-action-btn--readme{background:rgba(26,138,100,0.2);border:1px solid rgba(77,196,154,0.3);color:#4dc49a}
+    .cfg-action-btn--readme:hover{background:rgba(26,138,100,0.35)}
+    /* readme modal */
+    .readme-modal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;padding:16px}
+    .readme-modal--open{display:flex}
+    .readme-box{background:#1a1a1a;border:1px solid rgba(77,196,154,0.3);border-radius:12px;max-width:480px;width:100%;max-height:80vh;overflow-y:auto;padding:20px}
+    .readme-box h3{margin:0 0 12px;font-size:15px;color:#4dc49a;font-weight:700}
+    .readme-box h4{margin:12px 0 6px;font-size:12px;color:var(--primary-text-color,#eee);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+    .readme-box p,.readme-box li{font-size:12px;color:var(--secondary-text-color,#aaa);line-height:1.6;margin:3px 0}
+    .readme-box ul{padding-left:16px;margin:4px 0}
+    .readme-box code{background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:3px;font-size:11px;font-family:monospace;color:#7de8c0}
+    .readme-box code.copy-code{cursor:pointer;border:1px solid rgba(77,196,154,0.2);transition:background .15s}
+    .readme-box code.copy-code:hover{background:rgba(26,138,100,0.3);border-color:rgba(77,196,154,0.5)}
+    .readme-box code.copy-code.copied{background:rgba(26,138,100,0.5);color:#fff}
+    .readme-close{margin-top:14px;width:100%;padding:8px;border-radius:7px;border:1px solid rgba(77,196,154,0.3);background:rgba(26,138,100,0.15);color:#4dc49a;font-size:12px;font-weight:600;cursor:pointer}
+    .readme-close:hover{background:rgba(26,138,100,0.3)}
+  `; }
+
+  _mainHtml() { return `
+    <div class="hdr">
+      <div class="hdr-row1">
+        <div class="hdr-title" id="hdr-title">
+          <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2C9 7 5 10 5 14a7 7 0 0 0 14 0c0-4-4-7-7-12z"/><path d="M12 14v4M9 17h6"/></svg>
+          <h2>Sprinklers</h2>
+        </div>
+        <span class="badge" id="hdr-badge">8 zones</span>
+        <div class="cfg-btn" id="cfg-btn" title="Settings">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </div>
+      </div>
+      <div class="hdr-meta" id="hdr-meta"></div>
+      <div class="hdr-btns">
+        <button class="hbtn hbtn--stop" id="btn-off">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>All Off
+        </button>
+        <button class="hbtn hbtn--start" id="btn-start">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>Start Schedule
+        </button>
+      </div>
+    </div>
+    <div class="zones" id="zones"></div>
+    <div class="sched-wrap">
+      <div class="sched-hdr">
+        <span class="sched-title">Schedule</span>
+        <div class="stoggle" id="sched-toggle"><div class="stoggle-thumb"></div></div>
+      </div>
+      <div class="sched-body">
+        <div class="sched-days" id="sched-days"></div>
+        <div class="sched-time-wrap">
+          <div class="sched-time" id="sched-time">--:--</div>
+          <div class="sched-next" id="sched-next">—</div>
+        </div>
+      </div>
+    </div>
+    <div class="cfg-panel" id="cfg-panel"></div>
+    <div class="readme-modal" id="readme-modal">
+      <div class="readme-box">
+        <h3>💧 Sprinkler Card — Setup Guide</h3>
+        <h4>Installation</h4>
+        <ul>
+          <li>Copy <code class="copy-code">sprinkler-dash-card.js</code> to <code>/config/www/</code></li>
+          <li>Add Dashboard Resource type module: <code class="copy-code">/local/sprinkler-dash-card.js</code></li>
+          <li>Add card: <code class="copy-code">type: custom:sprinkler-dash-card-v2</code></li>
+        </ul>
+        <h4>Required: Valve Timer Helpers</h4>
+        <p>Create in <b>Settings → Helpers → Add → Number</b> for each zone:</p>
+        <ul>
+          <li><code class="copy-code">input_number.valve_1_time</code></li>
+          <li><code class="copy-code">input_number.valve_2_time</code></li>
+          <li><code class="copy-code">input_number.valve_3_time</code></li>
+          <li><code class="copy-code">input_number.valve_4_time</code></li>
+          <li><code class="copy-code">input_number.valve_5_time</code></li>
+          <li><code class="copy-code">input_number.valve_6_time</code></li>
+          <li><code class="copy-code">input_number.valve_7_time</code></li>
+          <li><code class="copy-code">input_number.valve_8_time</code></li>
+        </ul>
+        <p>Each helper: min 0, max 60, step 5, unit min</p>
+        <h4>Zone Switch Entities</h4>
+        <p>Set switch entities per zone in ⚙️ Settings. Use the search field to find your switches (e.g. search <code>sonoff</code>).</p>
+        <h4>Optional Sensors</h4>
+        <ul>
+          <li><b>Rain sensor</b>: precipitation in mm (e.g. <code>sensor.gw2000a_v2_1_8_event_rain_rate_piezo</code>)</li>
+          <li><b>Rain limit</b>: if rain exceeds this mm value the schedule is auto-disabled (shown yellow)</li>
+          <li><b>Weather</b>: any <code>weather.*</code> entity for conditions display</li>
+          <li><b>Jojo sensor</b>: water tank litres (e.g. <code>sensor.jojo_liters_left</code>)</li>
+          <li><b>Jojo low %</b>: if tank level drops below this %, all zones shut off immediately (shown red)</li>
+          <li><b>Schedule switch</b>: created by the Scheduler HACS integration — not the card</li>
+        </ul>
+        <h4>Info Bar Slots</h4>
+        <p>The header info bar has 4 configurable slots (⚙️ → Info bar). Each slot has a checkbox to enable/disable, a label, and up to 2 sensors. Enabled slots auto-layout: 1 slot = full width, 2 = side by side, 3 = 2+1, 4 = 2×2 grid. Disabled slots collapse and hide their sensor fields.</p>
+        <h4>Rain Auto-Disable Logic</h4>
+        <p>If the rain sensor in a slot exceeds the Rain limit threshold (mm), the schedule switch is turned off automatically and the slot turns yellow. Re-enable via the Schedule toggle.</p>
+        <h4>Jojo Shutoff Logic</h4>
+        <p>If <code>sensor.jojo_tank_level_liquid_level</code> drops below the Jojo low % (default 35%), all running zones shut off immediately and the Jojo slot turns red. Configurable in ⚙️ → Settings → Jojo low %.</p>
+        <h4>Navigation</h4>
+        <p>Set Nav path (e.g. <code>/lovelace</code>) in ⚙️ → Settings — tapping the Sprinklers title navigates there.</p>
+        <h4>Changelog</h4>
+        <ul>
+          <li><b>v7</b>: Info bar slots have enable/disable checkbox; disabled slots collapse; smart CSS grid layout (1→full, 2→50/50, 3→2+1, 4→2×2)</li>
+          <li><b>v6</b>: 4 fully configurable info bar slots (label + 2 sensors each); Jojo low % configurable in UI; nav_path persistence fixed; setConfig no longer overwrites saved values with defaults</li>
+          <li><b>v5</b>: Max zones increased to 10; entity search dropdown uses fixed-position global styles to escape shadow DOM; zone config has Switch Entity + Duration Entity rows; readme has Copy all button</li>
+          <li><b>v4</b>: Rain auto-disable schedule logic; Jojo level + % display; rain_threshold setting; jojo_sensor setting; all zones shut off when Jojo below threshold</li>
+          <li><b>v3</b>: Full settings panel with drag-to-reorder zones, active zone count, entity search, nav path, readme modal</li>
+          <li><b>v2</b>: Built-in scheduler section (replaces scheduler-card dependency); progress bar driven by switch last_changed; duration updates adjust countdown live</li>
+          <li><b>v1</b>: Initial release — zone grid, toggles, duration controls, header with All Off / Start Schedule</li>
+        </ul>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:14px">
+          <button class="readme-close" id="readme-close">Got it</button>
+          <button class="readme-close" id="readme-copy" style="background:rgba(26,138,100,0.2);border-color:rgba(77,196,154,0.4)">📋 Copy readme</button>
+        </div>
+      </div>
+    </div>
+  `; }
+
+  _bindMain() {
+    const r = this.shadowRoot;
+    r.getElementById('hdr-title').addEventListener('click', () => {
+      const p = this._cfg.nav_path;
+      if (p) { window.history.pushState(null,'',p); window.dispatchEvent(new CustomEvent('location-changed',{bubbles:true,composed:true})); }
+    });
+    r.getElementById('cfg-btn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._showConfig = !this._showConfig;
+      r.getElementById('cfg-btn').classList.toggle('cfg-btn--active', this._showConfig);
+      r.getElementById('cfg-panel').classList.toggle('cfg-panel--open', this._showConfig);
+      if (this._showConfig) this._renderConfigPanel();
+    });
+    r.getElementById('btn-off').addEventListener('click', () => this._allOff());
+    r.getElementById('btn-start').addEventListener('click', () => this._startSchedule());
+    r.getElementById('sched-toggle').addEventListener('click', () => {
+      const e = this._cfg.schedule_entity; if (!e) return;
+      const on = this._hass.states[e]?.state==='on';
+      this._svc('switch', on?'turn_off':'turn_on', {entity_id:e});
+    });
+    const daysEl = r.getElementById('sched-days');
+    this._days.forEach((d,i) => {
+      const btn = document.createElement('div');
+      btn.className='sday'; btn.id='sday-'+d; btn.textContent=this._dayLabels[i];
+      btn.addEventListener('click', ()=>this._toggleDay(d));
+      daysEl.appendChild(btn);
+    });
+    const timeEl = r.getElementById('sched-time');
+    timeEl.addEventListener('click', () => {
+      if (this._editingTime) return; this._editingTime=true;
+      const cur = timeEl.textContent.trim();
+      const inp = document.createElement('input'); inp.type='time'; inp.value=cur;
+      timeEl.innerHTML=''; timeEl.appendChild(inp); inp.focus();
+      const save = () => { this._editingTime=false; const val=inp.value; timeEl.textContent=val||cur; if (val&&val!==cur) this._saveTime(val); };
+      inp.addEventListener('blur', save); inp.addEventListener('change', save);
+    });
+    r.getElementById('readme-close').addEventListener('click', () => {
+      r.getElementById('readme-modal').classList.remove('readme-modal--open');
+    });
+    r.getElementById('readme-copy').addEventListener('click', () => {
+      const box = r.getElementById('readme-modal').querySelector('.readme-box');
+      const text = box.innerText.replace(/Got it|Copy readme/g,'').trim();
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = r.getElementById('readme-copy');
+        const orig = btn.textContent;
+        btn.textContent = '✓ Copied!';
+        setTimeout(()=>{ btn.textContent=orig; }, 1500);
+      }).catch(()=>{});
+    });
+  }
+
+  _buildZoneGrid() {
+    const grid = this.shadowRoot.getElementById('zones'); if (!grid) return;
+    grid.innerHTML='';
+    this._activeZones().forEach((z,i) => {
+      const el=document.createElement('div'); el.className='zone'; el.id='zone-'+i;
+      const top=document.createElement('div'); top.className='ztop';
+      const seq=document.createElement('div'); seq.className='zseq'; seq.id='zseq-'+i; seq.textContent=i+1;
+      const name=document.createElement('span'); name.className='zname'; name.textContent=z.name;
+      const tog=document.createElement('div'); tog.className='ztoggle'; tog.id='ztog-'+i;
+      tog.appendChild(Object.assign(document.createElement('div'),{className:'ztoggle-thumb'}));
+      top.append(seq,name,tog);
+      const pt=document.createElement('div'); pt.className='zprog-track';
+      const pf=document.createElement('div'); pf.className='zprog-fill'; pf.id='zprog-'+i; pt.appendChild(pf);
+      const stat=document.createElement('div'); stat.className='zstat'; stat.id='zstat-'+i; stat.textContent='Ready';
+      const dv=document.createElement('div'); dv.className='zdivider';
+      const dr=document.createElement('div'); dr.className='zdur-row';
+      const dl=document.createElement('span'); dl.className='zdur-lbl'; dl.textContent='Min';
+      const di=document.createElement('input'); di.type='number'; di.className='zdur-input';
+      di.id='zdur-'+i; di.min=0; di.max=60; di.step=5; di.value=10;
+      const du=document.createElement('span'); du.className='zdur-unit'; du.textContent='min';
+      const db=document.createElement('div'); db.className='zdur-btns';
+      const bm=document.createElement('button'); bm.className='zdur-btn'; bm.textContent='-';
+      const bp=document.createElement('button'); bp.className='zdur-btn'; bp.textContent='+';
+      db.append(bm,bp); dr.append(dl,di,du,db);
+      el.append(top,pt,stat,dv,dr); grid.appendChild(el);
+      tog.addEventListener('click',()=>{ if(!z.sw)return; const on=this._hass.states[z.sw]?.state==='on'; this._svc('switch',on?'turn_off':'turn_on',{entity_id:z.sw}); });
+      const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); if(this._onTimes[i])this._onTimes[i].totalSecs=val*60; };
+      di.addEventListener('change',()=>applyDur(parseFloat(di.value)||0));
+      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-5));
+      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+5));
+    });
+  }
+
+  // entity search with fixed-position dropdown injected to document body
+  _makeEntityInput(currentVal, onChange) {
+    // ensure global styles exist (may already be injected by _makeIconInput)
+    if (!document.getElementById('sdc-dropdown-style')) {
+      const st = document.createElement('style'); st.id='sdc-dropdown-style';
+      st.textContent = `
+        .sdc-dropdown{position:fixed;z-index:99999;background:#1e1e1e;border:1px solid rgba(77,196,154,0.5);border-radius:7px;max-height:180px;overflow-y:auto;display:none;box-shadow:0 6px 24px rgba(0,0,0,0.8);min-width:220px}
+        .sdc-dropdown.open{display:block}
+        .sdc-opt{padding:6px 10px;font-size:11px;font-family:monospace;color:#ddd;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .sdc-opt:hover{background:rgba(26,138,100,0.35);color:#4dc49a}
+        .sdc-icon-opt{display:flex;align-items:center;gap:8px;padding:5px 10px;cursor:pointer;transition:background .1s}
+        .sdc-icon-opt:hover{background:rgba(26,138,100,0.35)}
+        .sdc-icon-opt span{font-size:11px;font-family:monospace;color:#ddd}
+        .sdc-icon-opt ha-icon{--mdc-icon-size:16px;color:#4dc49a;flex-shrink:0}
+      `;
+      document.head.appendChild(st);
+    }
+
+    const wrap = document.createElement('div'); wrap.className='es-wrap';
+    const inp = document.createElement('input'); inp.type='text'; inp.className='es-input';
+    inp.value=currentVal; inp.placeholder='search entity...';
+    wrap.appendChild(inp);
+
+    const dd = document.createElement('div'); dd.className='sdc-dropdown';
+    document.body.appendChild(dd);
+
+    const position = () => {
+      const r = inp.getBoundingClientRect();
+      dd.style.top  = (r.bottom + 2)+'px';
+      dd.style.left = r.left+'px';
+      dd.style.width = Math.max(240, r.width)+'px';
+    };
+
+    let debounce;
+    const show = (q) => {
+      q = (q||'').toLowerCase().trim();
+      dd.innerHTML='';
+      if (!q) { dd.classList.remove('open'); return; }
+      const hits = this._allEntities.filter(e=>e.includes(q)).slice(0,40);
+      if (!hits.length) { dd.classList.remove('open'); return; }
+      hits.forEach(e => {
+        const opt=document.createElement('div'); opt.className='sdc-opt'; opt.textContent=e;
+        opt.addEventListener('mousedown',(ev)=>{ ev.preventDefault(); inp.value=e; dd.classList.remove('open'); onChange(e); });
+        dd.appendChild(opt);
+      });
+      position();
+      dd.classList.add('open');
+    };
+
+    inp.addEventListener('input',()=>{ clearTimeout(debounce); debounce=setTimeout(()=>show(inp.value),80); });
+    inp.addEventListener('focus',()=>{ show(inp.value); });
+    inp.addEventListener('blur',()=>{ setTimeout(()=>dd.classList.remove('open'),250); onChange(inp.value.trim()); });
+    inp.addEventListener('keydown',(e)=>{ if(e.key==='Escape'){dd.classList.remove('open');} });
+
+    // cleanup on disconnect
+    const obs = new MutationObserver(()=>{ if(!wrap.isConnected){ dd.remove(); obs.disconnect(); } });
+    obs.observe(document.body,{childList:true,subtree:true});
+
+    return wrap;
+  }
+
+  // MDI icon search input
+  _makeIconInput(currentVal, previewEl, onChange) {
+    if (!document.getElementById('sdc-dropdown-style')) {
+      const st = document.createElement('style'); st.id='sdc-dropdown-style';
+      st.textContent = `
+        .sdc-dropdown{position:fixed;z-index:99999;background:#1e1e1e;border:1px solid rgba(77,196,154,0.5);border-radius:7px;max-height:180px;overflow-y:auto;display:none;box-shadow:0 6px 24px rgba(0,0,0,0.8);min-width:220px}
+        .sdc-dropdown.open{display:block}
+        .sdc-opt{padding:6px 10px;font-size:11px;font-family:monospace;color:#ddd;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .sdc-opt:hover{background:rgba(26,138,100,0.35);color:#4dc49a}
+        .sdc-icon-opt{display:flex;align-items:center;gap:8px;padding:5px 10px;cursor:pointer;transition:background .1s}
+        .sdc-icon-opt:hover{background:rgba(26,138,100,0.35)}
+        .sdc-icon-opt span{font-size:11px;font-family:monospace;color:#ddd}
+        .sdc-icon-opt ha-icon{--mdc-icon-size:16px;color:#4dc49a;flex-shrink:0}
+      `;
+      document.head.appendChild(st);
+    }
+
+    const wrap = document.createElement('div'); wrap.className='es-wrap';
+    const inp = document.createElement('input'); inp.type='text'; inp.className='es-input';
+    inp.value=currentVal; inp.placeholder='search mdi icon...';
+    wrap.appendChild(inp);
+
+    const dd = document.createElement('div'); dd.className='sdc-dropdown';
+    document.body.appendChild(dd);
+
+    const position = () => {
+      const r = inp.getBoundingClientRect();
+      dd.style.top  = (r.bottom+2)+'px';
+      dd.style.left = r.left+'px';
+      dd.style.width = Math.max(240,r.width)+'px';
+    };
+
+    const updatePreview = (name) => {
+      if (previewEl) {
+        previewEl.innerHTML='';
+        if (name) {
+          previewEl.classList.add('icon-preview--set');
+          const ic=document.createElement('ha-icon'); ic.setAttribute('icon','mdi:'+name);
+          ic.style.cssText='--mdc-icon-size:14px;color:#4dc49a';
+          previewEl.appendChild(ic);
+        } else {
+          previewEl.classList.remove('icon-preview--set');
+        }
+      }
+    };
+
+    let debounce;
+    const show = (q) => {
+      q=(q||'').toLowerCase().trim();
+      dd.innerHTML='';
+      if (!q) { dd.classList.remove('open'); return; }
+      const src = this._mdiIcons.length ? this._mdiIcons : [];
+      const hits = src.filter(n=>n.includes(q)).slice(0,40);
+      if (!hits.length) { dd.classList.remove('open'); return; }
+      hits.forEach(name=>{
+        const opt=document.createElement('div'); opt.className='sdc-icon-opt';
+        const ic=document.createElement('ha-icon'); ic.setAttribute('icon','mdi:'+name);
+        const lbl=document.createElement('span'); lbl.textContent=name;
+        opt.append(ic,lbl);
+        opt.addEventListener('mousedown',(ev)=>{
+          ev.preventDefault(); inp.value=name; dd.classList.remove('open');
+          updatePreview(name); onChange(name);
+        });
+        dd.appendChild(opt);
+      });
+      position(); dd.classList.add('open');
+    };
+
+    inp.addEventListener('input',()=>{ clearTimeout(debounce); debounce=setTimeout(()=>show(inp.value),100); });
+    inp.addEventListener('focus',()=>{ if(inp.value) show(inp.value); });
+    inp.addEventListener('blur',()=>{ setTimeout(()=>dd.classList.remove('open'),250); onChange(inp.value.trim()); updatePreview(inp.value.trim()); });
+    inp.addEventListener('keydown',(e)=>{ if(e.key==='Escape') dd.classList.remove('open'); });
+
+    updatePreview(currentVal);
+
+    const obs=new MutationObserver(()=>{ if(!wrap.isConnected){ dd.remove(); obs.disconnect(); } });
+    obs.observe(document.body,{childList:true,subtree:true});
+
+    return wrap;
+  }
+
+  _renderConfigPanel() {
+    const panel = this.shadowRoot.getElementById('cfg-panel');
+    panel.innerHTML='';
+
+    // ── Active zones ──
+    const s1=document.createElement('div'); s1.className='cfg-section';
+    const l1=document.createElement('div'); l1.className='cfg-label'; l1.textContent='Active Zones';
+    const czrow=document.createElement('div'); czrow.className='cfg-zone-count';
+    const bm=document.createElement('button'); bm.className='cfg-count-btn'; bm.textContent='-';
+    const bp=document.createElement('button'); bp.className='cfg-count-btn'; bp.textContent='+';
+    const cv=document.createElement('div'); cv.className='cfg-count-val'; cv.id='cfg-count-val'; cv.textContent=this._cfg.active_zones;
+    const cm=document.createElement('span'); cm.className='cfg-count-max'; cm.textContent='/ '+MAX_ZONES;
+    bm.addEventListener('click',()=>{
+      const n=Math.max(1,this._cfg.active_zones-1);
+      this._saveConfig({active_zones:n}); cv.textContent=n;
+      this._buildZoneGrid(); this._update();
+      // refresh list so inactive styling updates
+      this._renderConfigPanel();
+    });
+    bp.addEventListener('click',()=>{
+      const n=Math.min(MAX_ZONES,this._cfg.active_zones+1);
+      this._saveConfig({active_zones:n}); cv.textContent=n;
+      this._buildZoneGrid(); this._update();
+      this._renderConfigPanel();
+    });
+    czrow.append(bm,cv,cm,bp); s1.append(l1,czrow);
+
+    // ── Zone list ──
+    const s2=document.createElement('div'); s2.className='cfg-section';
+    const l2=document.createElement('div'); l2.className='cfg-label'; l2.textContent='Zones — drag to reorder';
+    const zlist=document.createElement('div'); zlist.className='cfg-zone-list';
+    s2.append(l2,zlist);
+
+    this._cfg.zones.forEach((z,i)=>{
+      const item=document.createElement('div');
+      item.className='cfg-zone-item'+(i>=this._cfg.active_zones?' cfg-zone-item--inactive':'');
+      item.draggable=true;
+
+      // row 1: handle · seq · name
+      const r1=document.createElement('div'); r1.className='cfg-zone-row1';
+      const handle=document.createElement('div'); handle.className='drag-handle'; handle.textContent='⠿';
+      const seqB=document.createElement('div');
+      seqB.className='cfg-zone-seq'+(i>=this._cfg.active_zones?' cfg-zone-seq--inactive':'');
+      seqB.textContent=i+1;
+      const nameInp=document.createElement('input'); nameInp.type='text'; nameInp.className='cfg-zone-name';
+      nameInp.value=z.name; nameInp.placeholder='Zone name';
+      nameInp.addEventListener('change',()=>{ this._cfg.zones[i].name=nameInp.value; this._saveConfig({zones:this._cfg.zones}); this._buildZoneGrid(); this._update(); });
+      r1.append(handle,seqB,nameInp);
+
+      // row 2: switch entity
+      const r2=document.createElement('div'); r2.className='cfg-zone-row2';
+      const swLbl=document.createElement('span'); swLbl.className='cfg-row2-lbl'; swLbl.textContent='Switch Entity:';
+      const swWrap=this._makeEntityInput(z.sw||'',(val)=>{ this._cfg.zones[i].sw=val; this._saveConfig({zones:this._cfg.zones}); });
+      r2.append(swLbl,swWrap);
+
+      // row 3: duration entity
+      const r3=document.createElement('div'); r3.className='cfg-zone-row2';
+      const durLbl=document.createElement('span'); durLbl.className='cfg-row2-lbl'; durLbl.textContent='Duration Entity:';
+      const durWrap=this._makeEntityInput(z.dur||'',(val)=>{ this._cfg.zones[i].dur=val; this._saveConfig({zones:this._cfg.zones}); });
+      r3.append(durLbl,durWrap);
+
+      item.append(r1,r2,r3);
+
+      // drag
+      item.addEventListener('dragstart',(e)=>{ this._cfgDragSrc=i; item.classList.add('cfg-zone-item--dragging'); e.dataTransfer.effectAllowed='move'; });
+      item.addEventListener('dragend',()=>{ item.classList.remove('cfg-zone-item--dragging'); zlist.querySelectorAll('.cfg-zone-item').forEach(el=>el.classList.remove('cfg-zone-item--drag-over')); });
+      item.addEventListener('dragover',(e)=>{ e.preventDefault(); e.dataTransfer.dropEffect='move'; item.classList.add('cfg-zone-item--drag-over'); });
+      item.addEventListener('dragleave',()=>item.classList.remove('cfg-zone-item--drag-over'));
+      item.addEventListener('drop',(e)=>{ e.preventDefault(); item.classList.remove('cfg-zone-item--drag-over');
+        if (this._cfgDragSrc===undefined||this._cfgDragSrc===i) return;
+        const zones=JSON.parse(JSON.stringify(this._cfg.zones));
+        const [mv]=zones.splice(this._cfgDragSrc,1); zones.splice(i,0,mv);
+        this._saveConfig({zones}); this._renderConfigPanel(); this._buildZoneGrid(); this._update();
+      });
+      zlist.appendChild(item);
+    });
+
+    // ── Settings ──
+    const s3=document.createElement('div'); s3.className='cfg-section';
+    const l3=document.createElement('div'); l3.className='cfg-label'; l3.textContent='Settings';
+    const slist=document.createElement('div'); slist.className='cfg-settings-list';
+
+    // nav path — plain text, save on blur
+    const navRow=document.createElement('div'); navRow.className='cfg-field-row';
+    const navLbl=document.createElement('label'); navLbl.className='cfg-field-lbl'; navLbl.textContent='Nav path';
+    const navInp=document.createElement('input'); navInp.type='text'; navInp.className='cfg-field-input';
+    navInp.value=this._cfg.nav_path||''; navInp.placeholder='/lovelace/home';
+    navInp.addEventListener('blur',()=>{ this._saveConfig({nav_path:navInp.value}); });
+    navInp.addEventListener('keydown',(e)=>{ if(e.key==='Enter'){ this._saveConfig({nav_path:navInp.value}); navInp.blur(); } });
+    navRow.append(navLbl,navInp); slist.appendChild(navRow);
+
+    // rain threshold
+    const rtRow=document.createElement('div'); rtRow.className='cfg-field-row';
+    const rtLbl=document.createElement('label'); rtLbl.className='cfg-field-lbl'; rtLbl.textContent='Rain limit';
+    const rtInp=document.createElement('input'); rtInp.type='number'; rtInp.className='cfg-field-input';
+    rtInp.value=this._cfg.rain_threshold||5; rtInp.placeholder='5'; rtInp.min=0; rtInp.max=100;
+    const rtHint=document.createElement('span'); rtHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rtHint.textContent='mm → disable sched';
+    rtInp.addEventListener('blur',()=>{ this._saveConfig({rain_threshold:parseFloat(rtInp.value)||5}); });
+    rtRow.append(rtLbl,rtInp,rtHint); slist.appendChild(rtRow);
+
+    // jojo low %
+    const jlRow=document.createElement('div'); jlRow.className='cfg-field-row';
+    const jlLbl=document.createElement('label'); jlLbl.className='cfg-field-lbl'; jlLbl.textContent='Jojo low %';
+    const jlInp=document.createElement('input'); jlInp.type='number'; jlInp.className='cfg-field-input';
+    jlInp.value=this._cfg.jojo_low_pct||35; jlInp.placeholder='35'; jlInp.min=0; jlInp.max=100;
+    const jlHint=document.createElement('span'); jlHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; jlHint.textContent='% → shut off zones';
+    jlInp.addEventListener('blur',()=>{ this._saveConfig({jojo_low_pct:parseFloat(jlInp.value)||35}); });
+    jlRow.append(jlLbl,jlInp,jlHint); slist.appendChild(jlRow);
+
+    // entity fields
+    [{label:'Rain sensor',key:'rain_sensor',val:this._cfg.rain_sensor||''},{label:'Weather',key:'weather_entity',val:this._cfg.weather_entity||''},{label:'Jojo sensor',key:'jojo_sensor',val:this._cfg.jojo_sensor||''},{label:'Schedule sw',key:'schedule_entity',val:this._cfg.schedule_entity||''}]
+    .forEach(f=>{
+      const row=document.createElement('div'); row.className='cfg-field-row';
+      const lbl=document.createElement('label'); lbl.className='cfg-field-lbl'; lbl.textContent=f.label;
+      const wrap=this._makeEntityInput(f.val,(val)=>{ this._saveConfig({[f.key]:val}); this._update(); });
+      row.append(lbl,wrap); slist.appendChild(row);
+    });
+    s3.append(l3,slist);
+
+    // ── Info bar slots ──
+    const s4=document.createElement('div'); s4.className='cfg-section';
+    const l4=document.createElement('div'); l4.className='cfg-label'; l4.textContent='Info bar (4 slots)';
+    s4.appendChild(l4);
+    const slots=this._cfg.meta_slots||JSON.parse(JSON.stringify(DEFAULT_META_SLOTS));
+    slots.forEach((slot,si)=>{
+      const wrap=document.createElement('div'); wrap.style.cssText='border:1px solid rgba(255,255,255,0.07);border-radius:7px;padding:7px 8px;margin-bottom:5px;background:rgba(255,255,255,0.02)';
+      const isEnabled = slot.enabled!==false;
+
+      // slot header with checkbox
+      const slotHdr=document.createElement('div'); slotHdr.className='cfg-slot-header';
+      const cb=document.createElement('input'); cb.type='checkbox'; cb.className='cfg-slot-cb'; cb.checked=isEnabled;
+      const slotTitle=document.createElement('div');
+      slotTitle.className='cfg-slot-title'+(isEnabled?' cfg-slot-title--enabled':'');
+      slotTitle.textContent='Slot '+(si+1);
+
+      cb.addEventListener('change',()=>{
+        slots[si].enabled=cb.checked;
+        slotTitle.className='cfg-slot-title'+(cb.checked?' cfg-slot-title--enabled':'');
+        fieldsWrap.style.display=cb.checked?'block':'none';
+        this._saveConfig({meta_slots:JSON.parse(JSON.stringify(slots))});
+        this._updateMeta();
+      });
+      slotHdr.append(cb,slotTitle);
+
+      // collapsible fields
+      const fieldsWrap=document.createElement('div'); fieldsWrap.style.display=isEnabled?'block':'none';
+
+      const nameRow=document.createElement('div'); nameRow.className='cfg-field-row'; nameRow.style.marginBottom='4px';
+      const nameLbl=document.createElement('label'); nameLbl.className='cfg-field-lbl'; nameLbl.textContent='Label';
+      const nameInp=document.createElement('input'); nameInp.type='text'; nameInp.className='cfg-field-input';
+      nameInp.value=slot.label||''; nameInp.placeholder='e.g. Rain last 24h';
+      nameInp.addEventListener('blur',()=>{ slots[si].label=nameInp.value; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(slots))}); this._updateMeta(); });
+      nameRow.append(nameLbl,nameInp);
+
+      // icon row
+      const iconRow=document.createElement('div'); iconRow.className='cfg-field-row'; iconRow.style.marginBottom='4px';
+      const iconLbl=document.createElement('label'); iconLbl.className='cfg-field-lbl'; iconLbl.textContent='Icon';
+      const iconPreview=document.createElement('div'); iconPreview.className='icon-preview'+(slot.icon?' icon-preview--set':'');
+      if (slot.icon) {
+        const ic=document.createElement('ha-icon'); ic.setAttribute('icon','mdi:'+slot.icon);
+        ic.style.cssText='--mdc-icon-size:14px;color:#4dc49a'; iconPreview.appendChild(ic);
+      }
+      const iconWrap=this._makeIconInput(slot.icon||'', iconPreview, (val)=>{ slots[si].icon=val; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(slots))}); this._updateMeta(); });
+      iconRow.append(iconLbl,iconPreview,iconWrap);
+      nameRow.append(nameLbl,nameInp);
+
+      const s1row=document.createElement('div'); s1row.className='cfg-field-row'; s1row.style.marginBottom='4px';
+      const s1lbl=document.createElement('label'); s1lbl.className='cfg-field-lbl'; s1lbl.textContent='Sensor 1';
+      const s1wrap=this._makeEntityInput(slot.sensor1||'',(val)=>{ slots[si].sensor1=val; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(slots))}); this._updateMeta(); });
+      s1row.append(s1lbl,s1wrap);
+
+      const s2row=document.createElement('div'); s2row.className='cfg-field-row';
+      const s2lbl=document.createElement('label'); s2lbl.className='cfg-field-lbl'; s2lbl.textContent='Sensor 2';
+      const s2wrap=this._makeEntityInput(slot.sensor2||'',(val)=>{ slots[si].sensor2=val; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(slots))}); this._updateMeta(); });
+      s2row.append(s2lbl,s2wrap);
+
+      fieldsWrap.append(nameRow,iconRow,s1row,s2row);
+      wrap.append(slotHdr,fieldsWrap);
+      s4.appendChild(wrap);
+    });
+
+    // ── Bottom buttons ──
+    const btnRow=document.createElement('div'); btnRow.className='cfg-btns-row';
+    const closeBtn=document.createElement('button'); closeBtn.className='cfg-action-btn cfg-action-btn--close'; closeBtn.textContent='Close settings';
+    closeBtn.addEventListener('click',()=>{
+      this._showConfig=false;
+      this.shadowRoot.getElementById('cfg-btn').classList.remove('cfg-btn--active');
+      panel.classList.remove('cfg-panel--open');
+    });
+    const readmeBtn=document.createElement('button'); readmeBtn.className='cfg-action-btn cfg-action-btn--readme'; readmeBtn.textContent='📖 Readme';
+    readmeBtn.addEventListener('click',()=>{
+      this.shadowRoot.getElementById('readme-modal').classList.add('readme-modal--open');
+    });
+    btnRow.append(closeBtn,readmeBtn);
+
+    panel.append(s1,s2,s3,s4,btnRow);
+  }
+
+  _toggleDay(day) {
+    const e=this._cfg.schedule_entity; if(!e)return;
+    const cur=this._hass.states[e]?.attributes?.weekdays||[];
+    const next=cur.includes(day)?cur.filter(d=>d!==day):[...cur,day];
+    this._svc('scheduler','edit',{entity_id:e,weekdays:next});
+  }
+
+  _saveTime(ts) {
+    const e=this._cfg.schedule_entity; if(!e)return;
+    this._svc('scheduler','edit',{entity_id:e,timeslots:[{start:ts+':00',stop:null,actions:[{service:'script.turn_on',entity_id:'script.sprinkler'}]}]});
+  }
+
+  _update() { this._updateMeta(); this._updateZones(); this._updateSchedule(); }
+
+  _updateMeta() {
+    const meta=this.shadowRoot.getElementById('hdr-meta'); if(!meta)return;
+    meta.innerHTML='';
+    const slots = this._cfg.meta_slots || DEFAULT_META_SLOTS;
+    const jojoLow = parseFloat(this._cfg.jojo_low_pct)||35;
+    const rainThresh = parseFloat(this._cfg.rain_threshold)||5;
+    const activeSlots = slots.filter(s=>s.enabled!==false);
+
+    // set grid class based on count of enabled slots
+    meta.className = 'hdr-meta';
+    if (activeSlots.length===0) { meta.classList.add('hdr-meta--empty'); return; }
+    meta.classList.add('hdr-meta--'+Math.min(4,activeSlots.length));
+
+    slots.forEach(slot=>{
+      if (slot.enabled===false) return;
+      if (!slot.sensor1 && !slot.sensor2) return;
+      const s1 = slot.sensor1 && this._hass.states[slot.sensor1];
+      const s2 = slot.sensor2 && this._hass.states[slot.sensor2];
+      if (!s1 && !s2) return;
+
+      const it=document.createElement('div'); it.className='hdr-meta-item';
+      let parts=[], warn=false;
+
+      // MDI icon
+      if (slot.icon) {
+        const ic=document.createElement('ha-icon');
+        ic.setAttribute('icon','mdi:'+slot.icon);
+        ic.style.cssText='--mdc-icon-size:13px;flex-shrink:0;margin-right:1px';
+        it.appendChild(ic);
+      }
+
+      if (slot.label) parts.push(slot.label+':');
+
+      if (s1) {
+        const e1=slot.sensor1;
+        if (e1.startsWith('weather.')) {
+          const icons={sunny:'☀️','clear-night':'🌙',cloudy:'☁️',partlycloudy:'⛅',rainy:'🌧️',snowy:'❄️',windy:'💨',fog:'🌫️',lightning:'⛈️','lightning-rainy':'⛈️'};
+          const temp=s1.attributes.temperature;
+          // for weather, skip emoji if we have an mdi icon set
+          const condStr = slot.icon ? s1.state+(temp!==undefined?' · '+temp+'°':'') : (icons[s1.state]||'🌡️')+' '+s1.state+(temp!==undefined?' · '+temp+'°':'');
+          parts=[(slot.label?slot.label+': ':'')+condStr];
+        } else {
+          const val1=s1.state, unit1=s1.attributes.unit_of_measurement||'';
+          if (e1===this._cfg.rain_sensor||unit1==='mm') {
+            const numVal=parseFloat(val1)||0;
+            if (numVal>=rainThresh) {
+              warn=true;
+              if (this._cfg.schedule_entity&&this._hass.states[this._cfg.schedule_entity]?.state==='on')
+                this._svc('switch','turn_off',{entity_id:this._cfg.schedule_entity});
+            }
+          }
+          if (s2 && slot.sensor2.includes('liquid_level')) {
+            const pct=parseFloat(s2.state);
+            if (pct<jojoLow) {
+              warn=true;
+              it.title='Jojo below '+jojoLow+'% — all zones shut off';
+              const running=this._activeZones().map(z=>z.sw).filter(sw=>sw&&this._hass.states[sw]?.state==='on');
+              if (running.length) { this._svc('switch','turn_off',{entity_id:running}); }
+            }
+            parts.push(parseFloat(val1).toLocaleString()+unit1+' ('+pct.toFixed(0)+'%)');
+          } else {
+            parts.push(val1+(unit1?' '+unit1:''));
+            if (s2) {
+              const val2=s2.state, unit2=s2.attributes.unit_of_measurement||'';
+              parts.push('· '+val2+(unit2?' '+unit2:''));
+            }
+          }
+        }
+      } else if (s2) {
+        const val2=s2.state, unit2=s2.attributes.unit_of_measurement||'';
+        parts.push(val2+(unit2?' '+unit2:''));
+      }
+
+      const txt = document.createTextNode(parts.join(' '));
+      it.appendChild(txt);
+      if (warn) it.style.color='#ffcc44';
+      meta.appendChild(it);
+    });
+
+    // if only 1 item, span full width
+    const items = meta.querySelectorAll('.hdr-meta-item');
+    if (items.length===1) items[0].style.gridColumn='1 / -1';
+  }
+
+  _updateZones() {
+    if(!this._built)return;
+    let active=0;
+    this._activeZones().forEach((z,i)=>{
+      const isOn=z.sw&&this._hass.states[z.sw]?.state==='on';
+      const durVal=z.dur?parseFloat(this._hass.states[z.dur]?.state||10):10;
+      const durMin=z.dur?parseFloat(this._hass.states[z.dur]?.attributes?.min??0):0;
+      const durMax=z.dur?parseFloat(this._hass.states[z.dur]?.attributes?.max??60):60;
+      const lc=z.sw&&this._hass.states[z.sw]?.last_changed;
+      if(isOn){
+        active++;
+        if(!this._onTimes[i]||this._onTimes[i].lastChanged!==lc) this._onTimes[i]={ts:new Date(lc).getTime(),lastChanged:lc,totalSecs:durVal*60};
+        else if(this._prevDurVals[i]!==undefined&&this._prevDurVals[i]!==durVal) this._onTimes[i].totalSecs=durVal*60;
+      } else { delete this._onTimes[i]; }
+      this._prevDurVals[i]=durVal;
+      this.shadowRoot.getElementById('zone-'+i)?.classList.toggle('zone--on',isOn);
+      this.shadowRoot.getElementById('zseq-'+i)?.classList.toggle('zseq--on',isOn);
+      this.shadowRoot.getElementById('ztog-'+i)?.classList.toggle('ztoggle--on',isOn);
+      const inp=this.shadowRoot.getElementById('zdur-'+i);
+      if(inp&&inp!==this.shadowRoot.activeElement){inp.min=durMin;inp.max=durMax;inp.value=durVal;}
+      const elapsed=isOn&&this._onTimes[i]?(Date.now()-this._onTimes[i].ts)/1000:0;
+      this._renderProgress(i,isOn,elapsed,this._onTimes[i]?.totalSecs||durVal*60);
+    });
+    const badge=this.shadowRoot.getElementById('hdr-badge');
+    if(badge){badge.textContent=active>0?active+' watering':this._cfg.active_zones+' zones';badge.className='badge'+(active>0?' badge--active':'');}
+  }
+
+  _updateSchedule() {
+    if(!this._built)return;
+    const e=this._cfg.schedule_entity; if(!e||!this._hass.states[e])return;
+    const ent=this._hass.states[e], isOn=ent.state==='on', attrs=ent.attributes||{};
+    const tog=this.shadowRoot.getElementById('sched-toggle'); if(tog)tog.className='stoggle'+(isOn?' stoggle--on':'');
+    this._days.forEach(d=>{ const el=this.shadowRoot.getElementById('sday-'+d); if(el)el.className='sday'+((attrs.weekdays||[]).includes(d)?' sday--on':''); });
+    const timeEl=this.shadowRoot.getElementById('sched-time');
+    if(timeEl&&!this._editingTime){ const t=(attrs.timeslots||[])[0]||''; timeEl.textContent=(typeof t==='string'?t:(t.start||'')).substring(0,5)||'--:--'; }
+    const nextEl=this.shadowRoot.getElementById('sched-next');
+    if(nextEl&&attrs.next_trigger){
+      const d=new Date(attrs.next_trigger),now=new Date(),diff=d-now;
+      const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000);
+      const label=diff<0?'overdue':h<24?'in '+(h>0?h+'h ':'')+m+'m':['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+      nextEl.textContent=isOn?'next: '+label:'disabled';
+      nextEl.className='sched-next'+(isOn?' sched-next--on':'');
+    }
+  }
+
+  _renderProgress(i,isOn,elapsed,total){
+    const prog=this.shadowRoot.getElementById('zprog-'+i), stat=this.shadowRoot.getElementById('zstat-'+i);
+    if(!prog||!stat)return;
+    if(!isOn||total===0){prog.style.width='0%';stat.className='zstat';stat.textContent='Ready';return;}
+    prog.style.width=Math.min(100,(elapsed/total)*100).toFixed(2)+'%';
+    const rem=Math.max(0,Math.round(total-elapsed)),m=Math.floor(rem/60),s=rem%60;
+    stat.className='zstat zstat--on'; stat.innerHTML='';
+    const dot=document.createElement('span'); dot.className='pulse'; stat.appendChild(dot);
+    stat.appendChild(document.createTextNode(' '+m+'m '+String(s).padStart(2,'0')+'s left'));
+  }
+
+  _tick(){
+    if(!this._hass||!this._built)return;
+    this._activeZones().forEach((z,i)=>{
+      const isOn=z.sw&&this._hass.states[z.sw]?.state==='on';
+      const durVal=z.dur?parseFloat(this._hass.states[z.dur]?.state||10):10;
+      const elapsed=isOn&&this._onTimes[i]?(Date.now()-this._onTimes[i].ts)/1000:0;
+      this._renderProgress(i,isOn,elapsed,this._onTimes[i]?.totalSecs||durVal*60);
+    });
+    this._updateSchedule(); this._updateMeta();
+  }
+
+  getCardSize(){ return 7; }
+}
+
+if(!customElements.get('sprinkler-dash-card-v2')){
+  customElements.define('sprinkler-dash-card-v2',SprinklerDashCardV2);
+}
