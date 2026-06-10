@@ -1,8 +1,8 @@
 # 💧 Sprinkler Dash Card
 
-A fully self-contained smart irrigation dashboard card for Home Assistant. No dependencies on `scheduler-card` or any other custom card — everything is built in.
+A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your duration helpers, and everything else is configured and auto-created from the card UI.
 
-![Version](https://img.shields.io/badge/version-v1.7.0-green)
+![Version](https://img.shields.io/badge/version-v2.0.0-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 
@@ -10,24 +10,21 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. No de
 
 ## Features
 
-- **2-column zone grid** — up to 10 zones, each with toggle switch, progress bar, countdown timer, and adjustable duration
-- **Built-in scheduler** — enable/disable, set run days and time, shows next run countdown; powered by the [Scheduler integration](https://github.com/nielsfaber/scheduler-component)
-- **4-slot configurable info bar** — each slot has a label, MDI icon, and up to 2 sensors; supports weather entities with auto icons
-- **Rain auto-disable** — if rain sensor exceeds configured mm threshold, schedule is automatically disabled (shown yellow)
-- **Jojo/tank shutoff** — if tank level drops below configured %, all running zones are immediately switched off (shown red)
-- **Drag-to-reorder zones** in settings
-- **Searchable entity picker** for all entity fields
-- **MDI icon picker** with live preview for info bar slots
+- **Up to 10 configurable zones** — 2-column grid with toggle switch, progress bar, countdown timer, and adjustable duration
+- **Auto-creates everything** — on first load creates `script.sprinkler` and the Scheduler entity automatically; no manual scripting needed
+- **Zone schedule toggle** — tick/untick each zone to include or skip it in scheduled runs
+- **Built-in scheduler section** — enable/disable, set run days, set run time, shows next run countdown
+- **4-slot configurable info bar** — label, searchable MDI icon, up to 2 sensors per slot; tap any slot to open the entity detail popup
+- **Searchable entity picker** — find any HA entity by typing in all entity fields
+- **MDI icon picker** — search 7000+ icons with live preview
+- **Rain auto-disable** — when rain exceeds your configured mm threshold the schedule auto-disables (slot turns yellow)
+- **Jojo/tank low-level shutoff** — when tank drops below your configured %, all running zones shut off immediately (slot turns red)
+- **Automation rules panel** — enable/disable each rule individually from settings
+- **Drag-to-reorder zones** — reorder in settings; script run order matches
+- **All Off** — cuts all zones in a single service call directly from the card
 - **Navigation** — tap the card title to navigate to any HA view
-- **All Off** button cuts all zones in a single service call (no script dependency)
-- **Fully configurable in UI** — no YAML editing needed after initial setup
+- **Fully UI-configurable** — one line of YAML, everything else in ⚙️ settings
 - **HACS compatible**
-
----
-
-## Screenshots
-
-> Card with 4 info bar slots, 8 active zones, and schedule section
 
 ---
 
@@ -39,7 +36,7 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. No de
 2. Click the three-dot menu → **Custom repositories**
 3. Add `HybridRCG/sprinkler-dash-card` as category **Lovelace**
 4. Search for "Sprinkler Dash Card" and install
-5. Clear browser cache / hard refresh
+5. Hard refresh your browser
 
 ### Manual
 
@@ -47,31 +44,25 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. No de
 2. Copy to `/config/www/sprinkler-dash-card.js`
 3. Go to **Settings → Dashboards → Resources**
 4. Add `/local/sprinkler-dash-card.js` as type **JavaScript Module**
-5. Clear browser cache
+5. Hard refresh your browser
 
 ---
 
-## Card Configuration
+## Setup Guide
 
-Add the card to your dashboard (raw YAML editor):
+### Step 1 — Add the card
 
 ```yaml
 type: custom:sprinkler-dash-card-v2
 ```
 
-That's it — all configuration is done via the ⚙️ settings panel on the card itself.
+That's the only YAML you need. All configuration is done inside the card via the ⚙️ gear icon.
 
 ---
 
-## Prerequisites
+### Step 2 — Create duration helpers
 
-### Required: Scheduler Integration
-
-Install the [Scheduler Component](https://github.com/nielsfaber/scheduler-component) via HACS (Integration category). After installing, create a schedule for `script.sprinkler` — the resulting `switch.schedule_*` entity is what the card controls.
-
-### Required: Valve Duration Helpers
-
-Create one `input_number` helper per zone in **Settings → Helpers → Add → Number**:
+Go to **Settings → Helpers → Add Helper → Number** and create one per zone:
 
 | Helper | Min | Max | Step | Unit |
 |---|---|---|---|---|
@@ -86,76 +77,75 @@ Create one `input_number` helper per zone in **Settings → Helpers → Add → 
 
 Create up to `valve_10_time` if using 9 or 10 zones.
 
-### Optional: Sprinkler Script
+---
 
-The **Start Schedule** button calls `script.sprinkler`. Create this script to run your zones sequentially using the valve duration helpers.
+### Step 3 — Install Scheduler integration
+
+Install **[Scheduler Component](https://github.com/nielsfaber/scheduler-component)** via HACS (Integration category).
+
+That's all — on first load the card automatically:
+- Creates `script.sprinkler` built from your configured zones in sequence
+- Creates the Scheduler entity (defaults to Mon/Wed/Fri at 06:00)
+
+> Adjust the days and time directly on the card's Schedule section. The script silently rebuilds whenever you change zones, reorder them, or toggle their schedule checkbox.
 
 ---
 
-## Settings Panel
+### Step 4 — Configure zones in ⚙️
 
-Tap the ⚙️ gear icon on the card to open settings:
+- Set **Active Zones** (1–10) — controls how many zones appear in the grid
+- For each zone set the **Switch Entity** (valve switch) and **Duration Entity** (`input_number` from Step 2)
+- Use the search field to find entities by typing
+- Drag **⠿** to reorder — script run order matches zone order
+- **Checkbox** next to each zone name — tick to include in scheduled runs, untick to skip
 
-### Active Zones
-Set how many zones (1–10) are shown in the grid. Zones beyond the active count are hidden but their config is preserved.
+---
 
-### Zones — Drag to Reorder
-Each zone has:
-- **Name** — display label
-- **Switch Entity** — searchable `switch.*` entity
-- **Duration Entity** — searchable `input_number.*` entity
+### Step 5 — Configure settings in ⚙️
 
-Drag the `⠿` handle to reorder. Dimmed zones are inactive (beyond the active count).
+| Setting | Description |
+|---|---|
+| Nav path | Where tapping the title navigates (e.g. `/lovelace`) |
+| Rain sensor | Precipitation sensor in mm |
+| Rain limit | mm threshold above which schedule auto-disables |
+| Weather | Any `weather.*` entity |
+| Jojo sensor | Water tank litres sensor |
+| Jojo low % | Tank level % below which all zones shut off immediately |
+| Schedule switch | The `switch.schedule_*` entity from Scheduler (auto-detected) |
 
-### Settings
+---
+
+### Step 6 — Configure info bar in ⚙️
+
+4 slots in the header. Each slot has:
+
 | Field | Description |
 |---|---|
-| Nav path | Path to navigate when tapping the card title (e.g. `/lovelace`) |
-| Rain limit | mm threshold above which schedule is auto-disabled |
-| Jojo low % | Tank level % below which all zones are shut off |
-| Rain sensor | Precipitation sensor entity |
-| Weather | `weather.*` entity |
-| Jojo sensor | Water tank litres sensor |
-| Schedule sw | `switch.schedule_*` entity from Scheduler integration |
+| Enable | Checkbox to show/hide the slot |
+| Label | Text shown before the value |
+| Icon | Searchable MDI icon with live preview |
+| Sensor 1 | Primary value (`weather.*` entities auto-render with icon + temp) |
+| Sensor 2 | Optional second value appended inline |
 
-### Info Bar (4 Slots)
-Each slot has:
-- **Enable checkbox** — show/hide the slot; disabled slots collapse
-- **Label** — text prefix shown in the info bar
-- **Icon** — searchable MDI icon (e.g. `weather-rainy`, `water-well`); shown as `ha-icon`
-- **Sensor 1** — primary sensor; `weather.*` entities render with emoji + temp
-- **Sensor 2** — optional secondary sensor appended after Sensor 1
+**Tap any info bar item** to open the entity detail popup in HA.
 
-**Layout:**
-- 1 enabled → full width
-- 2 enabled → 50/50
-- 3 enabled → 3 equal columns, single row
-- 4 enabled → 2×2 grid
+Layout auto-adjusts: 1 enabled = full width, 2 = 50/50, 3 = 3 equal columns, 4 = 2×2 grid.
 
 ---
 
-## Smart Logic
+### Step 7 — Automation rules in ⚙️
 
-### Rain Auto-Disable
-When the rain sensor value ≥ Rain limit (mm), the schedule switch is turned off automatically and the slot turns **yellow**. Re-enable via the Schedule toggle inside the card.
-
-### Jojo Low-Level Shutoff
-When `sensor.jojo_tank_level_liquid_level` (or whichever sensor is in Sensor 2 of the Jojo slot and contains `liquid_level`) drops below the configured **Jojo low %** (default 35%), all currently running zones are switched off immediately. The Jojo slot turns **red**.
-
----
-
-## Changelog
-
-| Version | Changes |
+| Rule | Behaviour |
 |---|---|
-| v1.7.0 | Info bar slots have enable/disable checkbox; smart CSS grid layout (1→full, 2→50/50, 3→3-col, 4→2×2); 3-slot single row |
-| v1.6.0 | 4 fully configurable info bar slots (label + icon + 2 sensors); Jojo low % configurable; nav_path persistence fixed |
-| v1.5.0 | Max zones 10; entity search fixed (global style injection); Switch Entity + Duration Entity per zone; Copy readme button |
-| v1.4.0 | Rain auto-disable schedule; Jojo level + % display; rain_threshold setting; jojo_sensor setting |
-| v1.3.0 | Full settings panel: drag-to-reorder zones, active zone count, entity search, nav path, readme modal |
-| v1.2.0 | Built-in scheduler section; progress bar driven by switch last_changed; duration updates adjust countdown live |
-| v1.1.0 | All Off calls switches directly (no script); duration number input with +/- buttons; zone sequence numbers |
-| v1.0.0 | Initial release: zone grid, toggles, duration controls, green gradient header |
+| Rain: Auto-disable schedule | Rain sensor ≥ limit → schedule turns off, slot turns yellow |
+| Jojo: Low-level zone shutoff | Tank level < low % → all running zones switch off, slot turns red |
+
+---
+
+## How All Off and Start Schedule work
+
+- **All Off** — calls `switch.turn_off` on all active zone switches simultaneously from the card. No script involved.
+- **Start Schedule** — fires `script.sprinkler` which the card auto-created. Zones run sequentially in order, each for their configured duration. Only zones with the schedule checkbox ticked are included.
 
 ---
 
@@ -163,6 +153,23 @@ When `sensor.jojo_tank_level_liquid_level` (or whichever sensor is in Sensor 2 o
 
 - [Issues](../../issues)
 - [Home Assistant Community](https://community.home-assistant.io)
+
+---
+
+## Changelog
+
+| Version | Changes |
+|---|---|
+| v2.0.0 | Auto-creates `script.sprinkler` and Scheduler entity on first load; zone schedule checkbox; automation rules panel; sticky setup instructions with always-visible buttons; bigger fonts; info bar items clickable |
+| v1.8.0 | Auto-rebuild script on zone changes; setup instructions modal |
+| v1.7.0 | Info bar enable/disable per slot; MDI icon picker; smart grid layout |
+| v1.6.0 | 4 configurable info bar slots; Jojo low % setting; nav_path fix |
+| v1.5.0 | Max 10 zones; entity search fixed; Switch + Duration Entity per zone |
+| v1.4.0 | Rain auto-disable; Jojo level display; threshold settings |
+| v1.3.0 | Full settings panel; drag-to-reorder; entity search; nav path |
+| v1.2.0 | Built-in scheduler section; progress bar; live duration countdown |
+| v1.1.0 | All Off direct switch calls; +/- duration buttons; sequence numbers |
+| v1.0.0 | Initial release |
 
 ---
 

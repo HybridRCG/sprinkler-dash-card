@@ -8,16 +8,16 @@ const DEFAULT_META_SLOTS = [
 ];
 const DEFAULT_CONFIG = {
   zones: [
-    { name:'Agter',        sw:'switch.sonoff_1001e74824_3', dur:'input_number.valve_1_time' },
-    { name:'Visitor',      sw:'switch.sonoff_1001e74824_2', dur:'input_number.valve_2_time' },
-    { name:'Jojo',         sw:'switch.sonoff_1001e74824_1', dur:'input_number.valve_3_time' },
-    { name:'Gras Voor',    sw:'switch.sonoff_1001e74905_1', dur:'input_number.valve_4_time' },
-    { name:'Gras Muur',    sw:'switch.sonoff_1001e74905_2', dur:'input_number.valve_5_time' },
-    { name:'Gras Huis',    sw:'switch.sonoff_1001e74905_3', dur:'input_number.valve_6_time' },
-    { name:'Visitor Voor', sw:'switch.sonoff_100230849a_1', dur:'input_number.valve_7_time' },
-    { name:'Blombak',      sw:'switch.sonoff_1001e74824_4', dur:'input_number.valve_8_time' },
-    { name:'Zone 9',       sw:'', dur:'' },
-    { name:'Zone 10',      sw:'', dur:'' },
+    { name:'Agter',        sw:'switch.sonoff_1001e74824_3', dur:'input_number.valve_1_time',  schedule_enabled:true },
+    { name:'Visitor',      sw:'switch.sonoff_1001e74824_2', dur:'input_number.valve_2_time',  schedule_enabled:true },
+    { name:'Jojo',         sw:'switch.sonoff_1001e74824_1', dur:'input_number.valve_3_time',  schedule_enabled:true },
+    { name:'Gras Voor',    sw:'switch.sonoff_1001e74905_1', dur:'input_number.valve_4_time',  schedule_enabled:true },
+    { name:'Gras Muur',    sw:'switch.sonoff_1001e74905_2', dur:'input_number.valve_5_time',  schedule_enabled:true },
+    { name:'Gras Huis',    sw:'switch.sonoff_1001e74905_3', dur:'input_number.valve_6_time',  schedule_enabled:true },
+    { name:'Visitor Voor', sw:'switch.sonoff_100230849a_1', dur:'input_number.valve_7_time',  schedule_enabled:true },
+    { name:'Blombak',      sw:'switch.sonoff_1001e74824_4', dur:'input_number.valve_8_time',  schedule_enabled:true },
+    { name:'Zone 9',       sw:'', dur:'',  schedule_enabled:true },
+    { name:'Zone 10',      sw:'', dur:'',  schedule_enabled:true },
   ],
   active_zones: 8,
   schedule_entity: 'switch.schedule_sprinkler_scheduler',
@@ -28,6 +28,10 @@ const DEFAULT_CONFIG = {
   rain_threshold: 5,
   jojo_low_pct: 35,
   meta_slots: JSON.parse(JSON.stringify(DEFAULT_META_SLOTS)),
+  rules: {
+    rain_disable_schedule: true,
+    jojo_shutoff_zones: true,
+  },
 };
 
 class SprinklerDashCardV2 extends HTMLElement {
@@ -48,6 +52,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._allEntities = [];
     this._mdiIcons = [];
     this._mdiLoaded = false;
+    this._scriptChecked = false;
   }
 
   setConfig(config) {
@@ -64,6 +69,9 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (!Array.isArray(this._cfg.meta_slots)||this._cfg.meta_slots.length<4) {
       this._cfg.meta_slots = JSON.parse(JSON.stringify(DEFAULT_META_SLOTS));
     }
+    if (!this._cfg.rules) this._cfg.rules = { ...DEFAULT_CONFIG.rules };
+    // ensure schedule_enabled on all zones
+    this._cfg.zones.forEach(z=>{ if (z.schedule_enabled===undefined) z.schedule_enabled=true; });
     if (this._built) { this._built=false; this.shadowRoot.innerHTML=''; this._buildShell(); this._built=true; }
   }
 
@@ -75,6 +83,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (this._allEntities.length === 0) this._allEntities = Object.keys(hass.states).sort();
     if (!this._mdiLoaded) this._loadMdiIcons();
     if (!this._built) { this._buildShell(); this._built=true; }
+    this._ensureSprinklerScript();
     this._update();
   }
 
@@ -90,13 +99,17 @@ class SprinklerDashCardV2 extends HTMLElement {
   _activeZones() { return this._cfg.zones.slice(0, this._cfg.active_zones); }
 
   _saveConfig(patch) {
-    // deep merge patch into cfg
     for (const key of Object.keys(patch)) this._cfg[key] = patch[key];
     const ev = new CustomEvent('config-changed', {
       detail: { config: JSON.parse(JSON.stringify(this._cfg)) },
       bubbles: true, composed: true
     });
     this.dispatchEvent(ev);
+    // auto-rebuild script if zones changed
+    if (patch.zones !== undefined) {
+      clearTimeout(this._scriptRebuildTimer);
+      this._scriptRebuildTimer = setTimeout(() => this._createSprinklerScript(), 1500);
+    }
   }
 
   _allOff() {
@@ -105,7 +118,75 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._activeZones().forEach((_,i)=>{ delete this._onTimes[i]; this._renderProgress(i,false,0,0); });
   }
 
-  _startSchedule() { this._svc('script','turn_on',{entity_id:'script.sprinkler'}); }
+  _startSchedule() {
+    // auto-create script.sprinkler if it doesn't exist, then run it
+    if (!this._hass.states['script.sprinkler']) {
+      this._createSprinklerScript().then(() => {
+        setTimeout(() => this._svc('script','turn_on',{entity_id:'script.sprinkler'}), 1000);
+      });
+    } else {
+      this._svc('script','turn_on',{entity_id:'script.sprinkler'});
+    }
+  }
+
+  _createSprinklerScript() {
+    // Build a sequential script from the active zones that are schedule-enabled
+    const zones = this._activeZones().filter(z => z.sw && z.schedule_enabled !== false);
+    if (!zones.length) return Promise.resolve();
+
+    const sequence = [];
+    zones.forEach(z => {
+      // turn on the switch
+      sequence.push({ service:'switch.turn_on', target:{ entity_id: z.sw } });
+      // wait for the duration (read from input_number, default 10 min)
+      const durEntity = z.dur;
+      sequence.push({
+        wait_template: `{{ states('${durEntity}') | float(10) * 60 }}`,
+        // use delay with template
+      });
+      // use delay service call instead
+      sequence.pop(); // remove the broken wait
+      sequence.push({ delay: `{{ (states('${durEntity}') | float(10)) | int }}:00` });
+      // turn off
+      sequence.push({ service:'switch.turn_off', target:{ entity_id: z.sw } });
+    });
+
+    return this._hass.callApi('POST', 'config/script/config/sprinkler', {
+      alias: 'Sprinkler',
+      icon: 'mdi:sprinkler-fire',
+      mode: 'single',
+      sequence: sequence,
+    }).catch(err => console.warn('sprinkler-dash-card: could not create script.sprinkler', err));
+  }
+
+  _ensureSprinklerScript() {
+    if (this._scriptChecked) return;
+    this._scriptChecked = true;
+    const needsScript = !this._hass.states['script.sprinkler'];
+    const needsSched  = !Object.values(this._hass.states).some(s =>
+      s.entity_id.startsWith('switch.schedule_') &&
+      (s.attributes.entities||[]).includes('script.sprinkler')
+    );
+    if (needsScript) {
+      this._createSprinklerScript().then(() => {
+        if (needsSched) setTimeout(() => this._createSchedulerEntity(), 1200);
+      });
+    } else if (needsSched) {
+      this._createSchedulerEntity();
+    }
+  }
+
+  _createSchedulerEntity() {
+    // create a scheduler entity for script.sprinkler with sensible defaults
+    this._svc('scheduler', 'add', {
+      weekdays: ['mon','wed','fri'],
+      timeslots: [{
+        start: '06:00:00',
+        actions: [{ service: 'script.turn_on', entity_id: 'script.sprinkler' }],
+      }],
+      name: 'Sprinkler Scheduler',
+    });
+  }
 
   _buildShell() {
     this.shadowRoot.innerHTML = `<style>${this._css()}</style><ha-card id="root"></ha-card>`;
@@ -121,21 +202,22 @@ class SprinklerDashCardV2 extends HTMLElement {
     .hdr{background:linear-gradient(135deg,#0a5c45 0%,#1a8a64 55%,#4dc49a 100%);padding:10px 12px}
     .hdr-row1{display:flex;align-items:center;gap:8px;margin-bottom:5px}
     .hdr-title{display:flex;align-items:center;gap:7px;cursor:pointer;flex:1;min-width:0}
-    .hdr-title h2{margin:0;font-size:15px;font-weight:600;color:#fff;white-space:nowrap}
+    .hdr-title h2{margin:0;font-size:17px;font-weight:600;color:#fff;white-space:nowrap}
     .hdr-title:hover h2{text-decoration:underline;text-underline-offset:2px}
-    .badge{background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.25);border-radius:20px;padding:2px 8px;font-size:11px;color:rgba(255,255,255,0.9);white-space:nowrap;flex-shrink:0}
+    .badge{background:rgba(255,255,255,0.15);border:1px solid rgba(255,255,255,0.25);border-radius:20px;padding:2px 10px;font-size:12px;color:rgba(255,255,255,0.9);white-space:nowrap;flex-shrink:0}
     .badge--active{background:rgba(255,220,80,0.25);border-color:rgba(255,220,80,0.5);color:#ffe566}
-    .cfg-btn{background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.2);border-radius:6px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:rgba(255,255,255,0.8);flex-shrink:0;transition:background .15s}
+    .cfg-btn{background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.2);border-radius:6px;width:26px;height:26px;display:flex;align-items:center;justify-content:center;cursor:pointer;color:rgba(255,255,255,0.8);flex-shrink:0;transition:background .15s}
     .cfg-btn:hover,.cfg-btn--active{background:rgba(255,255,255,0.25);border-color:rgba(255,255,255,0.5)}
-    .hdr-meta{display:grid;gap:4px 8px;margin-bottom:7px;min-height:0}
+    .hdr-meta{display:grid;gap:5px 8px;margin-bottom:8px;min-height:0}
     .hdr-meta--1{grid-template-columns:1fr}
     .hdr-meta--2{grid-template-columns:1fr 1fr}
     .hdr-meta--3{grid-template-columns:1fr 1fr 1fr}
     .hdr-meta--4{grid-template-columns:1fr 1fr}
     .hdr-meta--empty{display:none}
-    .hdr-meta-item{display:flex;align-items:center;gap:3px;font-size:11px;color:rgba(255,255,255,0.78);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    .hdr-meta-item{display:flex;align-items:center;gap:4px;font-size:12px;font-weight:500;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:3px 7px;cursor:pointer;transition:background .15s}
+    .hdr-meta-item:hover{background:rgba(0,0,0,0.32);border-color:rgba(255,255,255,0.25)}
     .hdr-btns{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-    .hbtn{display:flex;align-items:center;justify-content:center;gap:5px;padding:7px 8px;border-radius:8px;border:none;cursor:pointer;font-size:12px;font-weight:600;transition:opacity .15s,transform .1s}
+    .hbtn{display:flex;align-items:center;justify-content:center;gap:5px;padding:8px 10px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:opacity .15s,transform .1s}
     .hbtn:active{transform:scale(0.97);opacity:.8}
     .hbtn--stop{background:rgba(210,45,45,0.9);color:#fff}
     .hbtn--start{background:rgba(255,255,255,0.92);color:#0a5c45}
@@ -145,59 +227,70 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zone--on{background:rgba(26,138,100,0.1);border-color:rgba(77,196,154,0.35)}
     .zone--on::before{background:linear-gradient(90deg,#1a8a64,#4dc49a)}
     .ztop{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-    .zseq{width:18px;height:18px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:9px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s}
+    .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s}
     .zseq--on{background:rgba(26,138,100,0.4);color:#4dc49a;border-color:rgba(77,196,154,0.4)}
-    .zname{flex:1;font-size:12px;font-weight:700;color:var(--primary-text-color,#f0f0f0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .zname{flex:1;font-size:13px;font-weight:700;color:var(--primary-text-color,#f0f0f0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .zone--on .zname{color:#7de8c0}
-    .ztoggle{position:relative;width:30px;height:17px;border-radius:9px;background:rgba(255,255,255,0.12);cursor:pointer;flex-shrink:0;transition:background .25s}
+    .zone--disabled .zname{color:var(--secondary-text-color,#555);text-decoration:line-through}
+    .ztoggle{position:relative;width:32px;height:18px;border-radius:9px;background:rgba(255,255,255,0.12);cursor:pointer;flex-shrink:0;transition:background .25s}
     .ztoggle--on{background:#1a8a64}
-    .ztoggle-thumb{position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:transform .25s;box-shadow:0 1px 3px rgba(0,0,0,0.4)}
-    .ztoggle--on .ztoggle-thumb{transform:translateX(13px)}
+    .ztoggle-thumb{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .25s;box-shadow:0 1px 3px rgba(0,0,0,0.4)}
+    .ztoggle--on .ztoggle-thumb{transform:translateX(14px)}
     .zprog-track{height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;margin-bottom:4px}
     .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width .9s linear}
-    .zstat{font-size:10px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:13px;margin-bottom:5px}
+    .zstat{font-size:11px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:14px;margin-bottom:5px}
     .zstat--on{color:#4dc49a}
     .pulse{display:inline-block;width:5px;height:5px;border-radius:50%;background:#4dc49a;flex-shrink:0;animation:pulse 1.2s ease-in-out infinite}
     @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}
     .zdivider{height:1px;background:rgba(255,255,255,0.05);margin-bottom:5px}
     .zdur-row{display:flex;align-items:center;gap:4px}
     .zdur-lbl{display:none}
-    input[type=number].zdur-input{width:42px;padding:3px 4px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#eee);font-size:11px;font-weight:600;text-align:center;-moz-appearance:textfield}
+    input[type=number].zdur-input{width:42px;padding:3px 4px;border-radius:5px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#eee);font-size:12px;font-weight:600;text-align:center;-moz-appearance:textfield}
     input[type=number].zdur-input::-webkit-outer-spin-button,input[type=number].zdur-input::-webkit-inner-spin-button{-webkit-appearance:none;margin:0}
     input[type=number].zdur-input:focus{outline:none;border-color:#1a8a64;background:rgba(26,138,100,0.15)}
-    .zdur-unit{font-size:10px;color:var(--secondary-text-color,#555);flex-shrink:0}
+    .zdur-unit{font-size:11px;color:var(--secondary-text-color,#555);flex-shrink:0}
     .zdur-btns{display:flex;gap:3px;margin-left:auto}
-    .zdur-btn{width:38px;height:19px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:14px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;transition:background .15s;padding:0}
+    .zdur-btn{width:38px;height:20px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;transition:background .15s;padding:0}
     .zdur-btn:hover{background:rgba(26,138,100,0.35);border-color:#1a8a64;color:#4dc49a}
     .zdur-btn:active{transform:scale(0.93)}
     .sched-wrap{margin:0 6px 6px;border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);overflow:hidden}
     .sched-hdr{display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,0.05)}
-    .sched-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#777);flex:1}
-    .stoggle{position:relative;width:30px;height:17px;border-radius:9px;background:rgba(255,255,255,0.12);cursor:pointer;flex-shrink:0;transition:background .25s}
+    .sched-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#777);flex:1}
+    .stoggle{position:relative;width:32px;height:18px;border-radius:9px;background:rgba(255,255,255,0.12);cursor:pointer;flex-shrink:0;transition:background .25s}
     .stoggle--on{background:#1a8a64}
-    .stoggle-thumb{position:absolute;top:2px;left:2px;width:13px;height:13px;border-radius:50%;background:#fff;transition:transform .25s;box-shadow:0 1px 3px rgba(0,0,0,0.4)}
-    .stoggle--on .stoggle-thumb{transform:translateX(13px)}
+    .stoggle-thumb{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .25s;box-shadow:0 1px 3px rgba(0,0,0,0.4)}
+    .stoggle--on .stoggle-thumb{transform:translateX(14px)}
     .sched-body{padding:8px 10px;display:flex;align-items:center;gap:8px}
-    .sched-days{display:flex;gap:3px;flex:1;flex-wrap:wrap}
-    .sday{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;cursor:pointer;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:var(--secondary-text-color,#666);transition:all .15s;flex-shrink:0;user-select:none}
+    .sched-days{display:flex;gap:4px;flex:1;flex-wrap:wrap}
+    .sday{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;cursor:pointer;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:var(--secondary-text-color,#666);transition:all .15s;flex-shrink:0;user-select:none}
     .sday--on{background:rgba(26,138,100,0.35);border-color:rgba(77,196,154,0.5);color:#4dc49a}
     .sched-time-wrap{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
-    .sched-time{font-size:18px;font-weight:700;color:var(--primary-text-color,#f0f0f0);cursor:pointer;letter-spacing:.02em;line-height:1;padding:2px 4px;border-radius:5px;border:1px solid transparent;transition:border-color .15s,background .15s;min-width:56px;text-align:right}
+    .sched-time{font-size:20px;font-weight:700;color:var(--primary-text-color,#f0f0f0);cursor:pointer;letter-spacing:.02em;line-height:1;padding:2px 4px;border-radius:5px;border:1px solid transparent;transition:border-color .15s,background .15s;min-width:60px;text-align:right}
     .sched-time:hover{border-color:rgba(77,196,154,0.4);background:rgba(26,138,100,0.1)}
-    .sched-time input[type=time]{width:70px;font-size:14px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:2px 4px;outline:none;text-align:center}
-    .sched-next{font-size:10px;color:var(--secondary-text-color,#666)}
+    .sched-time input[type=time]{width:74px;font-size:15px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:2px 4px;outline:none;text-align:center}
+    .sched-next{font-size:11px;color:var(--secondary-text-color,#666)}
     .sched-next--on{color:#4dc49a}
     /* CONFIG PANEL — no overflow:hidden so dropdowns escape */
     .cfg-panel{display:none;border-top:1px solid rgba(255,255,255,0.06)}
     .cfg-panel--open{display:block}
     .cfg-section{padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.05)}
     .cfg-section:last-child{border-bottom:none}
-    .cfg-label{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#666);margin-bottom:6px;font-weight:600}
+    .cfg-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#666);margin-bottom:6px;font-weight:600}
     .cfg-zone-count{display:flex;align-items:center;gap:8px}
-    .cfg-count-btn{width:26px;height:26px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#ccc);font-size:16px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:background .15s;flex-shrink:0}
+    .cfg-count-btn{width:28px;height:28px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#ccc);font-size:17px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:background .15s;flex-shrink:0}
     .cfg-count-btn:hover{background:rgba(26,138,100,0.3);border-color:#1a8a64;color:#4dc49a}
-    .cfg-count-val{font-size:16px;font-weight:700;color:var(--primary-text-color,#eee);min-width:22px;text-align:center}
-    .cfg-count-max{font-size:10px;color:var(--secondary-text-color,#666)}
+    .cfg-count-val{font-size:17px;font-weight:700;color:var(--primary-text-color,#eee);min-width:22px;text-align:center}
+    .cfg-count-max{font-size:11px;color:var(--secondary-text-color,#666)}
+    /* zone-disabled tick in grid */
+    .zone--disabled{opacity:.55}
+    .zone--disabled::before{background:rgba(255,255,255,0.04)!important}
+    /* rules section */
+    .rule-item{display:flex;align-items:flex-start;gap:8px;padding:7px 8px;border-radius:7px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.02);margin-bottom:4px}
+    .rule-cb{width:16px;height:16px;accent-color:#1a8a64;cursor:pointer;flex-shrink:0;margin-top:2px}
+    .rule-text{flex:1;min-width:0}
+    .rule-title{font-size:12px;font-weight:600;color:var(--primary-text-color,#ddd);margin-bottom:2px}
+    .rule-desc{font-size:10px;color:var(--secondary-text-color,#666);line-height:1.4}
+    .rule-item--enabled .rule-title{color:#4dc49a}
     /* zone list — NO overflow hidden */
     .cfg-zone-list{display:flex;flex-direction:column;gap:0;margin-top:6px}
     .cfg-zone-item{border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);margin-bottom:4px;border-radius:7px;transition:border-color .15s;position:relative}
@@ -240,19 +333,18 @@ class SprinklerDashCardV2 extends HTMLElement {
     .cfg-action-btn--close:hover{background:rgba(255,255,255,0.1)}
     .cfg-action-btn--readme{background:rgba(26,138,100,0.2);border:1px solid rgba(77,196,154,0.3);color:#4dc49a}
     .cfg-action-btn--readme:hover{background:rgba(26,138,100,0.35)}
-    /* readme modal */
     .readme-modal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;padding:16px}
     .readme-modal--open{display:flex}
-    .readme-box{background:#1a1a1a;border:1px solid rgba(77,196,154,0.3);border-radius:12px;max-width:480px;width:100%;max-height:80vh;overflow-y:auto;padding:20px}
-    .readme-box h3{margin:0 0 12px;font-size:15px;color:#4dc49a;font-weight:700}
-    .readme-box h4{margin:12px 0 6px;font-size:12px;color:var(--primary-text-color,#eee);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
-    .readme-box p,.readme-box li{font-size:12px;color:var(--secondary-text-color,#aaa);line-height:1.6;margin:3px 0}
-    .readme-box ul{padding-left:16px;margin:4px 0}
-    .readme-box code{background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:3px;font-size:11px;font-family:monospace;color:#7de8c0}
-    .readme-box code.copy-code{cursor:pointer;border:1px solid rgba(77,196,154,0.2);transition:background .15s}
-    .readme-box code.copy-code:hover{background:rgba(26,138,100,0.3);border-color:rgba(77,196,154,0.5)}
-    .readme-box code.copy-code.copied{background:rgba(26,138,100,0.5);color:#fff}
-    .readme-close{margin-top:14px;width:100%;padding:8px;border-radius:7px;border:1px solid rgba(77,196,154,0.3);background:rgba(26,138,100,0.15);color:#4dc49a;font-size:12px;font-weight:600;cursor:pointer}
+    .readme-box{background:#1a1a1a;border:1px solid rgba(77,196,154,0.3);border-radius:12px;max-width:480px;width:100%;max-height:80vh;display:flex;flex-direction:column;overflow:hidden}
+    .readme-sticky{padding:16px 20px 10px;border-bottom:1px solid rgba(77,196,154,0.15);flex-shrink:0}
+    .readme-sticky h3{margin:0 0 10px;font-size:15px;color:#4dc49a;font-weight:700}
+    .readme-btns{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    .readme-body{padding:4px 20px 16px;overflow-y:auto;flex:1}
+    .readme-body h4{margin:12px 0 6px;font-size:12px;color:var(--primary-text-color,#eee);font-weight:600;text-transform:uppercase;letter-spacing:.05em}
+    .readme-body p,.readme-body li{font-size:12px;color:var(--secondary-text-color,#aaa);line-height:1.6;margin:3px 0}
+    .readme-body ul{padding-left:16px;margin:4px 0}
+    .readme-body code{background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:3px;font-size:11px;font-family:monospace;color:#7de8c0}
+    .readme-close{padding:8px;border-radius:7px;border:1px solid rgba(77,196,154,0.3);background:rgba(26,138,100,0.15);color:#4dc49a;font-size:12px;font-weight:600;cursor:pointer;width:100%}
     .readme-close:hover{background:rgba(26,138,100,0.3)}
   `; }
 
@@ -295,58 +387,55 @@ class SprinklerDashCardV2 extends HTMLElement {
     <div class="cfg-panel" id="cfg-panel"></div>
     <div class="readme-modal" id="readme-modal">
       <div class="readme-box">
-        <h3>💧 Sprinkler Card — Setup Guide</h3>
-        <h4>Installation</h4>
+        <div class="readme-sticky">
+          <h3>💧 Sprinkler Card — Setup Guide</h3>
+          <div class="readme-btns">
+            <button class="readme-close" id="readme-close">Got it</button>
+            <button class="readme-close" id="readme-copy" style="background:rgba(26,138,100,0.2);border-color:rgba(77,196,154,0.4)">📋 Copy</button>
+          </div>
+        </div>
+        <div class="readme-body">
+        <h4>Step 1 — Install the card</h4>
         <ul>
-          <li>Copy <code class="copy-code">sprinkler-dash-card.js</code> to <code>/config/www/</code></li>
-          <li>Add Dashboard Resource type module: <code class="copy-code">/local/sprinkler-dash-card.js</code></li>
-          <li>Add card: <code class="copy-code">type: custom:sprinkler-dash-card-v2</code></li>
+          <li>Copy <code>sprinkler-dash-card.js</code> to <code>/config/www/</code></li>
+          <li>Go to <b>Settings → Dashboards → Resources</b></li>
+          <li>Add <code>/local/sprinkler-dash-card.js</code> as type <b>JavaScript Module</b></li>
+          <li>Add the card: <code>type: custom:sprinkler-dash-card-v2</code></li>
         </ul>
-        <h4>Required: Valve Timer Helpers</h4>
-        <p>Create in <b>Settings → Helpers → Add → Number</b> for each zone:</p>
+
+        <h4>Step 2 — Create duration helpers</h4>
+        <p>Go to <b>Settings → Helpers → Add → Number</b> and create one per zone:</p>
         <ul>
-          <li><code class="copy-code">input_number.valve_1_time</code></li>
-          <li><code class="copy-code">input_number.valve_2_time</code></li>
-          <li><code class="copy-code">input_number.valve_3_time</code></li>
-          <li><code class="copy-code">input_number.valve_4_time</code></li>
-          <li><code class="copy-code">input_number.valve_5_time</code></li>
-          <li><code class="copy-code">input_number.valve_6_time</code></li>
-          <li><code class="copy-code">input_number.valve_7_time</code></li>
-          <li><code class="copy-code">input_number.valve_8_time</code></li>
+          <li><code>input_number.valve_1_time</code> through <code>input_number.valve_8_time</code></li>
+          <li>Settings: min 0, max 60, step 5, unit <b>min</b></li>
+          <li>Add up to <code>valve_10_time</code> if using more than 8 zones</li>
         </ul>
-        <p>Each helper: min 0, max 60, step 5, unit min</p>
-        <h4>Zone Switch Entities</h4>
-        <p>Set switch entities per zone in ⚙️ Settings. Use the search field to find your switches (e.g. search <code>sonoff</code>).</p>
-        <h4>Optional Sensors</h4>
+
+        <h4>Step 3 — Install Scheduler integration</h4>
+        <p>Install <b>Scheduler Component</b> via HACS (Integration category). That's all — the card automatically creates both <code>script.sprinkler</code> and the scheduler entity on first load. The scheduler defaults to Mon/Wed/Fri at 06:00 — adjust the days and time using the Schedule section on the card.</p>
+
+        <h4>Step 4 — Configure zones in ⚙️</h4>
+        <p>Tap the gear icon → <b>Active Zones</b> to set how many zones to show. For each zone set the <b>Switch Entity</b> (your valve switch) and <b>Duration Entity</b> (the input_number from Step 2). Use the search field to find entities. Drag <b>⠿</b> to reorder. Tick the checkbox to include a zone in the schedule.</p>
+
+        <h4>Step 5 — Configure settings in ⚙️</h4>
         <ul>
-          <li><b>Rain sensor</b>: precipitation in mm (e.g. <code>sensor.gw2000a_v2_1_8_event_rain_rate_piezo</code>)</li>
-          <li><b>Rain limit</b>: if rain exceeds this mm value the schedule is auto-disabled (shown yellow)</li>
-          <li><b>Weather</b>: any <code>weather.*</code> entity for conditions display</li>
-          <li><b>Jojo sensor</b>: water tank litres (e.g. <code>sensor.jojo_liters_left</code>)</li>
-          <li><b>Jojo low %</b>: if tank level drops below this %, all zones shut off immediately (shown red)</li>
-          <li><b>Schedule switch</b>: created by the Scheduler HACS integration — not the card</li>
+          <li><b>Nav path</b>: where tapping the title navigates (e.g. <code>/lovelace</code>)</li>
+          <li><b>Rain sensor</b>: precipitation sensor in mm</li>
+          <li><b>Rain limit</b>: mm above which schedule auto-disables (turns yellow)</li>
+          <li><b>Weather</b>: any <code>weather.*</code> entity</li>
+          <li><b>Jojo sensor</b>: water tank litres entity</li>
+          <li><b>Jojo low %</b>: tank level below which all zones shut off immediately (turns red)</li>
+          <li><b>Schedule switch</b>: the <code>switch.schedule_*</code> entity from Scheduler</li>
         </ul>
-        <h4>Info Bar Slots</h4>
-        <p>The header info bar has 4 configurable slots (⚙️ → Info bar). Each slot has a checkbox to enable/disable, a label, and up to 2 sensors. Enabled slots auto-layout: 1 slot = full width, 2 = side by side, 3 = 2+1, 4 = 2×2 grid. Disabled slots collapse and hide their sensor fields.</p>
-        <h4>Rain Auto-Disable Logic</h4>
-        <p>If the rain sensor in a slot exceeds the Rain limit threshold (mm), the schedule switch is turned off automatically and the slot turns yellow. Re-enable via the Schedule toggle.</p>
-        <h4>Jojo Shutoff Logic</h4>
-        <p>If <code>sensor.jojo_tank_level_liquid_level</code> drops below the Jojo low % (default 35%), all running zones shut off immediately and the Jojo slot turns red. Configurable in ⚙️ → Settings → Jojo low %.</p>
-        <h4>Navigation</h4>
-        <p>Set Nav path (e.g. <code>/lovelace</code>) in ⚙️ → Settings — tapping the Sprinklers title navigates there.</p>
-        <h4>Changelog</h4>
-        <ul>
-          <li><b>v7</b>: Info bar slots have enable/disable checkbox; disabled slots collapse; smart CSS grid layout (1→full, 2→50/50, 3→2+1, 4→2×2)</li>
-          <li><b>v6</b>: 4 fully configurable info bar slots (label + 2 sensors each); Jojo low % configurable in UI; nav_path persistence fixed; setConfig no longer overwrites saved values with defaults</li>
-          <li><b>v5</b>: Max zones increased to 10; entity search dropdown uses fixed-position global styles to escape shadow DOM; zone config has Switch Entity + Duration Entity rows; readme has Copy all button</li>
-          <li><b>v4</b>: Rain auto-disable schedule logic; Jojo level + % display; rain_threshold setting; jojo_sensor setting; all zones shut off when Jojo below threshold</li>
-          <li><b>v3</b>: Full settings panel with drag-to-reorder zones, active zone count, entity search, nav path, readme modal</li>
-          <li><b>v2</b>: Built-in scheduler section (replaces scheduler-card dependency); progress bar driven by switch last_changed; duration updates adjust countdown live</li>
-          <li><b>v1</b>: Initial release — zone grid, toggles, duration controls, header with All Off / Start Schedule</li>
-        </ul>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:14px">
-          <button class="readme-close" id="readme-close">Got it</button>
-          <button class="readme-close" id="readme-copy" style="background:rgba(26,138,100,0.2);border-color:rgba(77,196,154,0.4)">📋 Copy readme</button>
+
+        <h4>Step 6 — Configure info bar in ⚙️</h4>
+        <p>4 slots are available. Each slot has an enable checkbox, label, MDI icon (searchable), and up to 2 sensors. Tap any info bar item to open the entity detail. Layout auto-adjusts: 1=full, 2=50/50, 3=3-col, 4=2×2.</p>
+
+        <h4>Step 7 — Automation rules in ⚙️</h4>
+        <p>Enable or disable the built-in rules at the bottom of settings: <b>Rain auto-disable</b> and <b>Jojo low-level shutoff</b>. Each rule shows its current threshold.</p>
+
+        <h4>Schedule section</h4>
+        <p>The toggle enables/disables the schedule. Tap day pills to toggle run days. Tap the time to edit it. The countdown shows when the schedule next fires.</p>
         </div>
       </div>
     </div>
@@ -392,7 +481,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       r.getElementById('readme-modal').classList.remove('readme-modal--open');
     });
     r.getElementById('readme-copy').addEventListener('click', () => {
-      const box = r.getElementById('readme-modal').querySelector('.readme-box');
+      const box = r.getElementById('readme-modal').querySelector('.readme-body');
       const text = box.innerText.replace(/Got it|Copy readme/g,'').trim();
       navigator.clipboard.writeText(text).then(() => {
         const btn = r.getElementById('readme-copy');
@@ -407,7 +496,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     const grid = this.shadowRoot.getElementById('zones'); if (!grid) return;
     grid.innerHTML='';
     this._activeZones().forEach((z,i) => {
-      const el=document.createElement('div'); el.className='zone'; el.id='zone-'+i;
+      const el=document.createElement('div'); el.className='zone'+(z.schedule_enabled===false?' zone--disabled':''); el.id='zone-'+i;
       const top=document.createElement('div'); top.className='ztop';
       const seq=document.createElement('div'); seq.className='zseq'; seq.id='zseq-'+i; seq.textContent=i+1;
       const name=document.createElement('span'); name.className='zname'; name.textContent=z.name;
@@ -611,21 +700,29 @@ class SprinklerDashCardV2 extends HTMLElement {
     const zlist=document.createElement('div'); zlist.className='cfg-zone-list';
     s2.append(l2,zlist);
 
-    this._cfg.zones.forEach((z,i)=>{
+    // only show active zones in the list
+    this._cfg.zones.slice(0, this._cfg.active_zones).forEach((z,i)=>{
       const item=document.createElement('div');
-      item.className='cfg-zone-item'+(i>=this._cfg.active_zones?' cfg-zone-item--inactive':'');
+      item.className='cfg-zone-item';
       item.draggable=true;
 
-      // row 1: handle · seq · name
+      // row 1: handle · seq · schedule-cb · name
       const r1=document.createElement('div'); r1.className='cfg-zone-row1';
       const handle=document.createElement('div'); handle.className='drag-handle'; handle.textContent='⠿';
-      const seqB=document.createElement('div');
-      seqB.className='cfg-zone-seq'+(i>=this._cfg.active_zones?' cfg-zone-seq--inactive':'');
-      seqB.textContent=i+1;
+      const seqB=document.createElement('div'); seqB.className='cfg-zone-seq'; seqB.textContent=i+1;
+
+      const schCb=document.createElement('input'); schCb.type='checkbox'; schCb.className='cfg-slot-cb';
+      schCb.checked=z.schedule_enabled!==false; schCb.title='Include in schedule';
+      schCb.addEventListener('change',()=>{
+        this._cfg.zones[i].schedule_enabled=schCb.checked;
+        this._saveConfig({zones:JSON.parse(JSON.stringify(this._cfg.zones))});
+        this._buildZoneGrid(); this._update();
+      });
+
       const nameInp=document.createElement('input'); nameInp.type='text'; nameInp.className='cfg-zone-name';
       nameInp.value=z.name; nameInp.placeholder='Zone name';
       nameInp.addEventListener('change',()=>{ this._cfg.zones[i].name=nameInp.value; this._saveConfig({zones:this._cfg.zones}); this._buildZoneGrid(); this._update(); });
-      r1.append(handle,seqB,nameInp);
+      r1.append(handle,seqB,schCb,nameInp);
 
       // row 2: switch entity
       const r2=document.createElement('div'); r2.className='cfg-zone-row2';
@@ -759,6 +856,40 @@ class SprinklerDashCardV2 extends HTMLElement {
       s4.appendChild(wrap);
     });
 
+    // ── Rules ──
+    const s5=document.createElement('div'); s5.className='cfg-section';
+    const l5=document.createElement('div'); l5.className='cfg-label'; l5.textContent='Automation Rules';
+    s5.appendChild(l5);
+
+    const rules = this._cfg.rules || {};
+    const rulesDef = [
+      {
+        key:'rain_disable_schedule',
+        title:'Rain: Auto-disable schedule',
+        desc:`If rain sensor exceeds ${this._cfg.rain_threshold||5}mm, the schedule switch is automatically turned off. Rain value turns yellow in info bar.`,
+      },
+      {
+        key:'jojo_shutoff_zones',
+        title:'Jojo: Low-level zone shutoff',
+        desc:`If tank level drops below ${this._cfg.jojo_low_pct||35}%, all running zones are immediately switched off. Jojo info bar turns red.`,
+      },
+    ];
+    rulesDef.forEach(rd=>{
+      const enabled = rules[rd.key]!==false;
+      const ruleEl=document.createElement('div'); ruleEl.className='rule-item'+(enabled?' rule-item--enabled':'');
+      const cb=document.createElement('input'); cb.type='checkbox'; cb.className='rule-cb'; cb.checked=enabled;
+      const txt=document.createElement('div'); txt.className='rule-text';
+      const title=document.createElement('div'); title.className='rule-title'; title.textContent=rd.title;
+      const desc=document.createElement('div'); desc.className='rule-desc'; desc.textContent=rd.desc;
+      txt.append(title,desc);
+      cb.addEventListener('change',()=>{
+        rules[rd.key]=cb.checked;
+        ruleEl.className='rule-item'+(cb.checked?' rule-item--enabled':'');
+        this._saveConfig({rules:{...rules}});
+      });
+      ruleEl.append(cb,txt); s5.appendChild(ruleEl);
+    });
+
     // ── Bottom buttons ──
     const btnRow=document.createElement('div'); btnRow.className='cfg-btns-row';
     const closeBtn=document.createElement('button'); closeBtn.className='cfg-action-btn cfg-action-btn--close'; closeBtn.textContent='Close settings';
@@ -767,13 +898,13 @@ class SprinklerDashCardV2 extends HTMLElement {
       this.shadowRoot.getElementById('cfg-btn').classList.remove('cfg-btn--active');
       panel.classList.remove('cfg-panel--open');
     });
-    const readmeBtn=document.createElement('button'); readmeBtn.className='cfg-action-btn cfg-action-btn--readme'; readmeBtn.textContent='📖 Readme';
+    const readmeBtn=document.createElement('button'); readmeBtn.className='cfg-action-btn cfg-action-btn--readme'; readmeBtn.textContent='📖 Setup Instructions';
     readmeBtn.addEventListener('click',()=>{
       this.shadowRoot.getElementById('readme-modal').classList.add('readme-modal--open');
     });
     btnRow.append(closeBtn,readmeBtn);
 
-    panel.append(s1,s2,s3,s4,btnRow);
+    panel.append(s1,s2,s3,s4,s5,btnRow);
   }
 
   _toggleDay(day) {
@@ -835,7 +966,7 @@ class SprinklerDashCardV2 extends HTMLElement {
           const val1=s1.state, unit1=s1.attributes.unit_of_measurement||'';
           if (e1===this._cfg.rain_sensor||unit1==='mm') {
             const numVal=parseFloat(val1)||0;
-            if (numVal>=rainThresh) {
+            if (numVal>=rainThresh && this._cfg.rules?.rain_disable_schedule!==false) {
               warn=true;
               if (this._cfg.schedule_entity&&this._hass.states[this._cfg.schedule_entity]?.state==='on')
                 this._svc('switch','turn_off',{entity_id:this._cfg.schedule_entity});
@@ -843,7 +974,7 @@ class SprinklerDashCardV2 extends HTMLElement {
           }
           if (s2 && slot.sensor2.includes('liquid_level')) {
             const pct=parseFloat(s2.state);
-            if (pct<jojoLow) {
+            if (pct<jojoLow && this._cfg.rules?.jojo_shutoff_zones!==false) {
               warn=true;
               it.title='Jojo below '+jojoLow+'% — all zones shut off';
               const running=this._activeZones().map(z=>z.sw).filter(sw=>sw&&this._hass.states[sw]?.state==='on');
@@ -866,6 +997,12 @@ class SprinklerDashCardV2 extends HTMLElement {
       const txt = document.createTextNode(parts.join(' '));
       it.appendChild(txt);
       if (warn) it.style.color='#ffcc44';
+      // click opens more-info for sensor1
+      if (slot.sensor1) {
+        it.addEventListener('click',()=>{
+          this.dispatchEvent(new CustomEvent('hass-more-info',{detail:{entityId:slot.sensor1},bubbles:true,composed:true}));
+        });
+      }
       meta.appendChild(it);
     });
 
@@ -890,6 +1027,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       } else { delete this._onTimes[i]; }
       this._prevDurVals[i]=durVal;
       this.shadowRoot.getElementById('zone-'+i)?.classList.toggle('zone--on',isOn);
+      this.shadowRoot.getElementById('zone-'+i)?.classList.toggle('zone--disabled', z.schedule_enabled===false);
       this.shadowRoot.getElementById('zseq-'+i)?.classList.toggle('zseq--on',isOn);
       this.shadowRoot.getElementById('ztog-'+i)?.classList.toggle('ztoggle--on',isOn);
       const inp=this.shadowRoot.getElementById('zdur-'+i);
