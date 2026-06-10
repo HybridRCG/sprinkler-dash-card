@@ -53,12 +53,17 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._mdiIcons = [];
     this._mdiLoaded = false;
     this._scriptChecked = false;
+    this._pendingEdits = {};
+    this._saveDebounce = null; // key: 'zone-N-name' etc, value: current typed value
   }
 
   setConfig(config) {
-    // merge: only fill missing keys from DEFAULT_CONFIG, never overwrite existing values
+    console.log('[SprinklerCard] setConfig called, zones[0].name =', config?.zones?.[0]?.name, 'nav_path =', config?.nav_path);
+    const prevActiveZones = this._cfg?.active_zones;
+    // deep-clone EVERYTHING — HA passes frozen objects, we need mutable copies
     const merged = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
-    for (const key of Object.keys(config)) merged[key] = config[key];
+    const incoming = JSON.parse(JSON.stringify(config));
+    for (const key of Object.keys(incoming)) merged[key] = incoming[key];
     this._cfg = merged;
     if (!Array.isArray(this._cfg.zones)) this._cfg.zones = JSON.parse(JSON.stringify(DEFAULT_CONFIG.zones));
     while (this._cfg.zones.length < MAX_ZONES) {
@@ -70,9 +75,35 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._cfg.meta_slots = JSON.parse(JSON.stringify(DEFAULT_META_SLOTS));
     }
     if (!this._cfg.rules) this._cfg.rules = { ...DEFAULT_CONFIG.rules };
-    // ensure schedule_enabled on all zones
     this._cfg.zones.forEach(z=>{ if (z.schedule_enabled===undefined) z.schedule_enabled=true; });
-    if (this._built) { this._built=false; this.shadowRoot.innerHTML=''; this._buildShell(); this._built=true; }
+
+    // restore any in-flight user edits that HA's echo may have overwritten
+    for (const key of Object.keys(this._pendingEdits||{})) {
+      const m = key.match(/^zone-(\d+)-name$/);
+      if (m) {
+        const idx = parseInt(m[1]);
+        if (this._cfg.zones[idx]) this._cfg.zones[idx].name = this._pendingEdits[key];
+      }
+      if (key==='nav_path') this._cfg.nav_path = this._pendingEdits[key];
+    }
+
+    if (!this._built) {
+      // first time — full build happens in set hass
+      return;
+    }
+
+    // only rebuild zone grid if active zone count changed
+    if (this._cfg.active_zones !== prevActiveZones) {
+      this._buildZoneGrid();
+    }
+
+    // update zone name spans in main grid (config panel inputs are live)
+    this._activeZones().forEach((z, i) => {
+      const span = this.shadowRoot.getElementById('zone-'+i)?.querySelector('.zname');
+      if (span) span.textContent = z.name;
+    });
+
+    this._update();
   }
 
   connectedCallback() { this._tickInterval = setInterval(()=>this._tick(), 1000); }
@@ -100,16 +131,15 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _saveConfig(patch) {
     for (const key of Object.keys(patch)) this._cfg[key] = patch[key];
-    const ev = new CustomEvent('config-changed', {
-      detail: { config: JSON.parse(JSON.stringify(this._cfg)) },
-      bubbles: true, composed: true
-    });
-    this.dispatchEvent(ev);
-    // auto-rebuild script if zones changed
     if (patch.zones !== undefined) {
       clearTimeout(this._scriptRebuildTimer);
       this._scriptRebuildTimer = setTimeout(() => this._createSprinklerScript(), 1500);
     }
+    // debounced websocket save — coalesces rapid changes into one write
+    clearTimeout(this._saveDebounce);
+    this._saveDebounce = setTimeout(() => {
+      this._saveViaWebsocket(JSON.parse(JSON.stringify(this._cfg)), null);
+    }, 300);
   }
 
   _allOff() {
@@ -271,8 +301,10 @@ class SprinklerDashCardV2 extends HTMLElement {
     .sched-next{font-size:11px;color:var(--secondary-text-color,#666)}
     .sched-next--on{color:#4dc49a}
     /* CONFIG PANEL — no overflow:hidden so dropdowns escape */
-    .cfg-panel{display:none;border-top:1px solid rgba(255,255,255,0.06)}
-    .cfg-panel--open{display:block}
+    .cfg-panel{display:none;border-top:1px solid rgba(255,255,255,0.06);flex-direction:column;max-height:70vh}
+    .cfg-panel--open{display:flex}
+    .cfg-sticky-hdr{display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:1px solid rgba(255,255,255,0.1);flex-shrink:0;background:var(--card-background-color,#1c1c1c);position:sticky;top:0;z-index:10}
+    .cfg-body{overflow-y:auto;flex:1}
     .cfg-section{padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.05)}
     .cfg-section:last-child{border-bottom:none}
     .cfg-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#666);margin-bottom:6px;font-weight:600}
@@ -671,6 +703,38 @@ class SprinklerDashCardV2 extends HTMLElement {
     const panel = this.shadowRoot.getElementById('cfg-panel');
     panel.innerHTML='';
 
+    // ── Sticky header ──
+    const stickyHdr=document.createElement('div'); stickyHdr.className='cfg-sticky-hdr';
+
+    const saveBtn=document.createElement('button');
+    saveBtn.style.cssText='flex:1;padding:7px;border-radius:7px;border:none;background:linear-gradient(135deg,#0a5c45,#1a8a64);color:#fff;font-size:12px;font-weight:700;cursor:pointer';
+    saveBtn.textContent='💾 Save';
+    saveBtn.addEventListener('click',()=>this._doSave(saveBtn));
+
+    const closeBtn=document.createElement('button'); closeBtn.className='cfg-action-btn cfg-action-btn--close';
+    closeBtn.style.cssText='padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#999);font-size:12px;font-weight:600;cursor:pointer';
+    closeBtn.textContent='Close';
+    closeBtn.addEventListener('click',()=>{
+      this._showConfig=false;
+      this.shadowRoot.getElementById('cfg-btn').classList.remove('cfg-btn--active');
+      panel.classList.remove('cfg-panel--open');
+    });
+
+    const readmeBtn=document.createElement('button'); readmeBtn.className='cfg-action-btn cfg-action-btn--readme';
+    readmeBtn.style.cssText='padding:7px 12px;border-radius:7px;border:1px solid rgba(77,196,154,0.3);background:rgba(26,138,100,0.2);color:#4dc49a;font-size:12px;font-weight:600;cursor:pointer';
+    readmeBtn.textContent='📖';
+    readmeBtn.title='Setup Instructions';
+    readmeBtn.addEventListener('click',()=>{
+      this.shadowRoot.getElementById('readme-modal').classList.add('readme-modal--open');
+    });
+
+    stickyHdr.append(saveBtn, closeBtn, readmeBtn);
+    panel.appendChild(stickyHdr);
+
+    // ── Scrollable body ──
+    const body=document.createElement('div'); body.className='cfg-body';
+    panel.appendChild(body);
+
     // ── Active zones ──
     const s1=document.createElement('div'); s1.className='cfg-section';
     const l1=document.createElement('div'); l1.className='cfg-label'; l1.textContent='Active Zones';
@@ -721,7 +785,7 @@ class SprinklerDashCardV2 extends HTMLElement {
 
       const nameInp=document.createElement('input'); nameInp.type='text'; nameInp.className='cfg-zone-name';
       nameInp.value=z.name; nameInp.placeholder='Zone name';
-      nameInp.addEventListener('change',()=>{ this._cfg.zones[i].name=nameInp.value; this._saveConfig({zones:this._cfg.zones}); this._buildZoneGrid(); this._update(); });
+      nameInp.dataset.zoneNameIdx=i; // picked up by Save button
       r1.append(handle,seqB,schCb,nameInp);
 
       // row 2: switch entity
@@ -762,8 +826,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     const navLbl=document.createElement('label'); navLbl.className='cfg-field-lbl'; navLbl.textContent='Nav path';
     const navInp=document.createElement('input'); navInp.type='text'; navInp.className='cfg-field-input';
     navInp.value=this._cfg.nav_path||''; navInp.placeholder='/lovelace/home';
-    navInp.addEventListener('blur',()=>{ this._saveConfig({nav_path:navInp.value}); });
-    navInp.addEventListener('keydown',(e)=>{ if(e.key==='Enter'){ this._saveConfig({nav_path:navInp.value}); navInp.blur(); } });
+    navInp.dataset.cfgKey='nav_path';
     navRow.append(navLbl,navInp); slist.appendChild(navRow);
 
     // rain threshold
@@ -771,8 +834,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     const rtLbl=document.createElement('label'); rtLbl.className='cfg-field-lbl'; rtLbl.textContent='Rain limit';
     const rtInp=document.createElement('input'); rtInp.type='number'; rtInp.className='cfg-field-input';
     rtInp.value=this._cfg.rain_threshold||5; rtInp.placeholder='5'; rtInp.min=0; rtInp.max=100;
+    rtInp.dataset.cfgKey='rain_threshold';
     const rtHint=document.createElement('span'); rtHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rtHint.textContent='mm → disable sched';
-    rtInp.addEventListener('blur',()=>{ this._saveConfig({rain_threshold:parseFloat(rtInp.value)||5}); });
     rtRow.append(rtLbl,rtInp,rtHint); slist.appendChild(rtRow);
 
     // jojo low %
@@ -780,8 +843,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     const jlLbl=document.createElement('label'); jlLbl.className='cfg-field-lbl'; jlLbl.textContent='Jojo low %';
     const jlInp=document.createElement('input'); jlInp.type='number'; jlInp.className='cfg-field-input';
     jlInp.value=this._cfg.jojo_low_pct||35; jlInp.placeholder='35'; jlInp.min=0; jlInp.max=100;
+    jlInp.dataset.cfgKey='jojo_low_pct';
     const jlHint=document.createElement('span'); jlHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; jlHint.textContent='% → shut off zones';
-    jlInp.addEventListener('blur',()=>{ this._saveConfig({jojo_low_pct:parseFloat(jlInp.value)||35}); });
     jlRow.append(jlLbl,jlInp,jlHint); slist.appendChild(jlRow);
 
     // entity fields
@@ -811,10 +874,10 @@ class SprinklerDashCardV2 extends HTMLElement {
       slotTitle.textContent='Slot '+(si+1);
 
       cb.addEventListener('change',()=>{
-        slots[si].enabled=cb.checked;
+        this._cfg.meta_slots[si].enabled=cb.checked;
         slotTitle.className='cfg-slot-title'+(cb.checked?' cfg-slot-title--enabled':'');
         fieldsWrap.style.display=cb.checked?'block':'none';
-        this._saveConfig({meta_slots:JSON.parse(JSON.stringify(slots))});
+        this._saveConfig({meta_slots:JSON.parse(JSON.stringify(this._cfg.meta_slots))});
         this._updateMeta();
       });
       slotHdr.append(cb,slotTitle);
@@ -826,7 +889,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       const nameLbl=document.createElement('label'); nameLbl.className='cfg-field-lbl'; nameLbl.textContent='Label';
       const nameInp=document.createElement('input'); nameInp.type='text'; nameInp.className='cfg-field-input';
       nameInp.value=slot.label||''; nameInp.placeholder='e.g. Rain last 24h';
-      nameInp.addEventListener('blur',()=>{ slots[si].label=nameInp.value; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(slots))}); this._updateMeta(); });
+      nameInp.addEventListener('change',()=>{ this._cfg.meta_slots[si].label=nameInp.value; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(this._cfg.meta_slots))}); this._updateMeta(); });
+      nameInp.addEventListener('blur',()=>{ this._cfg.meta_slots[si].label=nameInp.value; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(this._cfg.meta_slots))}); this._updateMeta(); });
       nameRow.append(nameLbl,nameInp);
 
       // icon row
@@ -837,18 +901,18 @@ class SprinklerDashCardV2 extends HTMLElement {
         const ic=document.createElement('ha-icon'); ic.setAttribute('icon','mdi:'+slot.icon);
         ic.style.cssText='--mdc-icon-size:14px;color:#4dc49a'; iconPreview.appendChild(ic);
       }
-      const iconWrap=this._makeIconInput(slot.icon||'', iconPreview, (val)=>{ slots[si].icon=val; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(slots))}); this._updateMeta(); });
+      const iconWrap=this._makeIconInput(slot.icon||'', iconPreview, (val)=>{ this._cfg.meta_slots[si].icon=val; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(this._cfg.meta_slots))}); this._updateMeta(); });
       iconRow.append(iconLbl,iconPreview,iconWrap);
       nameRow.append(nameLbl,nameInp);
 
       const s1row=document.createElement('div'); s1row.className='cfg-field-row'; s1row.style.marginBottom='4px';
       const s1lbl=document.createElement('label'); s1lbl.className='cfg-field-lbl'; s1lbl.textContent='Sensor 1';
-      const s1wrap=this._makeEntityInput(slot.sensor1||'',(val)=>{ slots[si].sensor1=val; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(slots))}); this._updateMeta(); });
+      const s1wrap=this._makeEntityInput(slot.sensor1||'',(val)=>{ this._cfg.meta_slots[si].sensor1=val; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(this._cfg.meta_slots))}); this._updateMeta(); });
       s1row.append(s1lbl,s1wrap);
 
       const s2row=document.createElement('div'); s2row.className='cfg-field-row';
       const s2lbl=document.createElement('label'); s2lbl.className='cfg-field-lbl'; s2lbl.textContent='Sensor 2';
-      const s2wrap=this._makeEntityInput(slot.sensor2||'',(val)=>{ slots[si].sensor2=val; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(slots))}); this._updateMeta(); });
+      const s2wrap=this._makeEntityInput(slot.sensor2||'',(val)=>{ this._cfg.meta_slots[si].sensor2=val; this._saveConfig({meta_slots:JSON.parse(JSON.stringify(this._cfg.meta_slots))}); this._updateMeta(); });
       s2row.append(s2lbl,s2wrap);
 
       fieldsWrap.append(nameRow,iconRow,s1row,s2row);
@@ -890,21 +954,83 @@ class SprinklerDashCardV2 extends HTMLElement {
       ruleEl.append(cb,txt); s5.appendChild(ruleEl);
     });
 
-    // ── Bottom buttons ──
-    const btnRow=document.createElement('div'); btnRow.className='cfg-btns-row';
-    const closeBtn=document.createElement('button'); closeBtn.className='cfg-action-btn cfg-action-btn--close'; closeBtn.textContent='Close settings';
-    closeBtn.addEventListener('click',()=>{
-      this._showConfig=false;
-      this.shadowRoot.getElementById('cfg-btn').classList.remove('cfg-btn--active');
-      panel.classList.remove('cfg-panel--open');
-    });
-    const readmeBtn=document.createElement('button'); readmeBtn.className='cfg-action-btn cfg-action-btn--readme'; readmeBtn.textContent='📖 Setup Instructions';
-    readmeBtn.addEventListener('click',()=>{
-      this.shadowRoot.getElementById('readme-modal').classList.add('readme-modal--open');
-    });
-    btnRow.append(closeBtn,readmeBtn);
+    body.append(s1,s2,s3,s4,s5);
+  }
 
-    panel.append(s1,s2,s3,s4,s5,btnRow);
+  _doSave(btn) {
+    const panel = this.shadowRoot.getElementById('cfg-panel');
+    // collect zone names
+    panel.querySelectorAll('[data-zone-name-idx]').forEach(inp=>{
+      const idx=parseInt(inp.dataset.zoneNameIdx);
+      if (this._cfg.zones[idx]) this._cfg.zones[idx].name=inp.value.trim()||this._cfg.zones[idx].name;
+    });
+    // collect settings fields
+    const navEl=panel.querySelector('[data-cfg-key="nav_path"]');
+    if (navEl) this._cfg.nav_path=navEl.value;
+    const rtEl=panel.querySelector('[data-cfg-key="rain_threshold"]');
+    if (rtEl) this._cfg.rain_threshold=parseFloat(rtEl.value)||5;
+    const jlEl=panel.querySelector('[data-cfg-key="jojo_low_pct"]');
+    if (jlEl) this._cfg.jojo_low_pct=parseFloat(jlEl.value)||35;
+
+    // save directly via HA websocket — bypasses sections layout config-changed limitation
+    const configToSave = JSON.parse(JSON.stringify(this._cfg));
+    console.log('[SprinklerCard] _doSave saving via websocket, zones[0].name =', configToSave?.zones?.[0]?.name);
+    this._saveViaWebsocket(configToSave, btn);
+
+    // update zone name spans in grid
+    this._activeZones().forEach((z,i)=>{
+      const span=this.shadowRoot.getElementById('zone-'+i)?.querySelector('.zname');
+      if (span) span.textContent=z.name;
+    });
+    this._buildZoneGrid();
+    this._update();
+  }
+
+  async _saveViaWebsocket(newCardConfig, btn) {
+    try {
+      const conn = this._hass.connection;
+      const lovelace = await conn.sendMessagePromise({ type: 'lovelace/config' });
+
+      // recursively find and replace the sprinkler card anywhere in the config
+      const replaceCard = (cards) => {
+        if (!Array.isArray(cards)) return false;
+        for (let i = 0; i < cards.length; i++) {
+          const c = cards[i];
+          if (c.type === 'custom:sprinkler-dash-card-v2') {
+            cards[i] = { type: 'custom:sprinkler-dash-card-v2', ...newCardConfig };
+            return true;
+          }
+          // recurse into nested cards (vertical-stack, grid, sections, etc)
+          if (replaceCard(c.cards)) return true;
+          if (replaceCard(c.sections?.flatMap?.(s => s.cards))) return true;
+        }
+        return false;
+      };
+
+      let found = false;
+      for (const view of (lovelace.views || [])) {
+        if (replaceCard(view.cards)) { found = true; break; }
+        for (const section of (view.sections || [])) {
+          if (replaceCard(section.cards)) { found = true; break; }
+        }
+        if (found) break;
+      }
+
+      if (!found) { console.warn('[SprinklerCard] card not found in lovelace config'); return; }
+
+      await conn.sendMessagePromise({ type: 'lovelace/config/save', config: lovelace });
+      console.log('[SprinklerCard] saved OK');
+
+      if (btn) {
+        const orig = btn.textContent;
+        btn.textContent = '✓ Saved!';
+        btn.style.background = 'rgba(26,138,100,0.5)';
+        setTimeout(()=>{ btn.textContent=orig; btn.style.background='linear-gradient(135deg,#0a5c45,#1a8a64)'; }, 1500);
+      }
+    } catch(e) {
+      console.error('[SprinklerCard] save failed', e);
+      if (btn) { btn.textContent = '✗ Failed'; setTimeout(()=>{ btn.textContent='💾 Save'; }, 2000); }
+    }
   }
 
   _toggleDay(day) {
@@ -1080,8 +1206,19 @@ class SprinklerDashCardV2 extends HTMLElement {
   }
 
   getCardSize(){ return 7; }
+
+  static getConfigElement() { return document.createElement('sprinkler-dash-card-v2'); }
+  static getStubConfig() { return JSON.parse(JSON.stringify(DEFAULT_CONFIG)); }
 }
 
 if(!customElements.get('sprinkler-dash-card-v2')){
-  customElements.define('sprinkler-dash-card-v2',SprinklerDashCardV2);
+  customElements.define('sprinkler-dash-card-v2', SprinklerDashCardV2);
 }
+
+window.customCards = window.customCards || [];
+window.customCards.push({
+  type: 'sprinkler-dash-card-v2',
+  name: 'Sprinkler Dash Card',
+  description: 'Smart irrigation dashboard with zones, scheduler, rain and tank monitoring',
+  preview: false,
+});
