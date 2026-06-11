@@ -32,6 +32,7 @@ const DEFAULT_CONFIG = {
     rain_disable_schedule: true,
     jojo_shutoff_zones: true,
   },
+  confirm_actions: true,
 };
 
 class SprinklerDashCardV2 extends HTMLElement {
@@ -142,21 +143,46 @@ class SprinklerDashCardV2 extends HTMLElement {
     }, 300);
   }
 
+  // show confirmation dialog — returns promise resolving true/false
+  _confirm(title, msg, okClass='confirm-btn--ok') {
+    if (!this._cfg.confirm_actions) return Promise.resolve(true);
+    const r = this.shadowRoot;
+    r.getElementById('confirm-title').textContent = title;
+    r.getElementById('confirm-msg').textContent = msg;
+    const okBtn = r.getElementById('confirm-ok');
+    okBtn.className = 'confirm-btn ' + okClass;
+    r.getElementById('confirm-modal').classList.add('confirm-modal--open');
+    return new Promise(resolve => {
+      this._confirmResolve = resolve;
+      const onOk = () => {
+        r.getElementById('confirm-modal').classList.remove('confirm-modal--open');
+        okBtn.removeEventListener('click', onOk);
+        resolve(true);
+      };
+      okBtn.addEventListener('click', onOk);
+    });
+  }
+
   _allOff() {
-    const switches = this._activeZones().map(z=>z.sw).filter(Boolean);
-    if (switches.length) this._svc('switch','turn_off',{entity_id:switches});
-    this._activeZones().forEach((_,i)=>{ delete this._onTimes[i]; this._renderProgress(i,false,0,0); });
+    this._confirm('All Off', 'Turn off all zones immediately?', 'confirm-btn--danger').then(ok => {
+      if (!ok) return;
+      const switches = this._activeZones().map(z=>z.sw).filter(Boolean);
+      if (switches.length) this._svc('switch','turn_off',{entity_id:switches});
+      this._activeZones().forEach((_,i)=>{ delete this._onTimes[i]; this._renderProgress(i,false,0,0); });
+    });
   }
 
   _startSchedule() {
-    // auto-create script.sprinkler if it doesn't exist, then run it
-    if (!this._hass.states['script.sprinkler']) {
-      this._createSprinklerScript().then(() => {
-        setTimeout(() => this._svc('script','turn_on',{entity_id:'script.sprinkler'}), 1000);
-      });
-    } else {
-      this._svc('script','turn_on',{entity_id:'script.sprinkler'});
-    }
+    this._confirm('Start Schedule', 'Run all scheduled zones now?').then(ok => {
+      if (!ok) return;
+      if (!this._hass.states['script.sprinkler']) {
+        this._createSprinklerScript().then(() => {
+          setTimeout(() => this._svc('script','turn_on',{entity_id:'script.sprinkler'}), 1000);
+        });
+      } else {
+        this._svc('script','turn_on',{entity_id:'script.sprinkler'});
+      }
+    });
   }
 
   _createSprinklerScript() {
@@ -166,19 +192,10 @@ class SprinklerDashCardV2 extends HTMLElement {
 
     const sequence = [];
     zones.forEach(z => {
-      // turn on the switch
-      sequence.push({ service:'switch.turn_on', target:{ entity_id: z.sw } });
-      // wait for the duration (read from input_number, default 10 min)
-      const durEntity = z.dur;
-      sequence.push({
-        wait_template: `{{ states('${durEntity}') | float(10) * 60 }}`,
-        // use delay with template
-      });
-      // use delay service call instead
-      sequence.pop(); // remove the broken wait
-      sequence.push({ delay: `{{ (states('${durEntity}') | float(10)) | int }}:00` });
-      // turn off
-      sequence.push({ service:'switch.turn_off', target:{ entity_id: z.sw } });
+      sequence.push({ action:'switch.turn_on', target:{ entity_id: z.sw } });
+      // use dict format: {minutes: X} — unambiguous, no HH:MM:SS confusion
+      sequence.push({ delay: { minutes: `{{ states('${z.dur}') | float(10) | int }}` } });
+      sequence.push({ action:'switch.turn_off', target:{ entity_id: z.sw } });
     });
 
     return this._hass.callApi('POST', 'config/script/config/sprinkler', {
@@ -378,6 +395,20 @@ class SprinklerDashCardV2 extends HTMLElement {
     .readme-body code{background:rgba(255,255,255,0.08);padding:1px 5px;border-radius:3px;font-size:11px;font-family:monospace;color:#7de8c0}
     .readme-close{padding:8px;border-radius:7px;border:1px solid rgba(77,196,154,0.3);background:rgba(26,138,100,0.15);color:#4dc49a;font-size:12px;font-weight:600;cursor:pointer;width:100%}
     .readme-close:hover{background:rgba(26,138,100,0.3)}
+    /* confirm modal */
+    .confirm-modal{display:none;position:fixed;inset:0;z-index:10001;background:rgba(0,0,0,0.7);align-items:center;justify-content:center;padding:24px}
+    .confirm-modal--open{display:flex}
+    .confirm-box{background:#1a1a1a;border:1px solid rgba(255,255,255,0.12);border-radius:12px;padding:20px;max-width:320px;width:100%;text-align:center}
+    .confirm-box h4{margin:0 0 8px;font-size:15px;font-weight:600;color:var(--primary-text-color,#eee)}
+    .confirm-box p{margin:0 0 16px;font-size:13px;color:var(--secondary-text-color,#aaa);line-height:1.5}
+    .confirm-btns{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+    .confirm-btn{padding:9px;border-radius:8px;border:none;font-size:13px;font-weight:600;cursor:pointer;transition:opacity .15s}
+    .confirm-btn--cancel{background:rgba(255,255,255,0.07);color:var(--secondary-text-color,#aaa);border:1px solid rgba(255,255,255,0.1)}
+    .confirm-btn--cancel:hover{background:rgba(255,255,255,0.12)}
+    .confirm-btn--ok{background:linear-gradient(135deg,#0a5c45,#1a8a64);color:#fff}
+    .confirm-btn--ok:hover{opacity:.85}
+    .confirm-btn--danger{background:rgba(210,45,45,0.85);color:#fff}
+    .confirm-btn--danger:hover{opacity:.85}
   `; }
 
   _mainHtml() { return `
@@ -471,6 +502,16 @@ class SprinklerDashCardV2 extends HTMLElement {
         </div>
       </div>
     </div>
+    <div class="confirm-modal" id="confirm-modal">
+      <div class="confirm-box">
+        <h4 id="confirm-title">Are you sure?</h4>
+        <p id="confirm-msg"></p>
+        <div class="confirm-btns">
+          <button class="confirm-btn confirm-btn--cancel" id="confirm-cancel">Cancel</button>
+          <button class="confirm-btn confirm-btn--ok" id="confirm-ok">Confirm</button>
+        </div>
+      </div>
+    </div>
   `; }
 
   _bindMain() {
@@ -490,8 +531,12 @@ class SprinklerDashCardV2 extends HTMLElement {
     r.getElementById('btn-start').addEventListener('click', () => this._startSchedule());
     r.getElementById('sched-toggle').addEventListener('click', () => {
       const e = this._cfg.schedule_entity; if (!e) return;
-      const on = this._hass.states[e]?.state==='on';
-      this._svc('switch', on?'turn_off':'turn_on', {entity_id:e});
+      const isOn = this._hass.states[e]?.state==='on';
+      const msg = isOn ? 'Disable the irrigation schedule?' : 'Enable the irrigation schedule?';
+      const okClass = isOn ? 'confirm-btn--danger' : 'confirm-btn--ok';
+      this._confirm('Schedule', msg, okClass).then(ok => {
+        if (ok) this._svc('switch', isOn?'turn_off':'turn_on', {entity_id:e});
+      });
     });
     const daysEl = r.getElementById('sched-days');
     this._days.forEach((d,i) => {
@@ -511,6 +556,11 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
     r.getElementById('readme-close').addEventListener('click', () => {
       r.getElementById('readme-modal').classList.remove('readme-modal--open');
+    });
+    // confirm modal — cancel just closes
+    r.getElementById('confirm-cancel').addEventListener('click', () => {
+      r.getElementById('confirm-modal').classList.remove('confirm-modal--open');
+      this._confirmResolve && this._confirmResolve(false);
     });
     r.getElementById('readme-copy').addEventListener('click', () => {
       const box = r.getElementById('readme-modal').querySelector('.readme-body');
@@ -549,7 +599,16 @@ class SprinklerDashCardV2 extends HTMLElement {
       const bp=document.createElement('button'); bp.className='zdur-btn'; bp.textContent='+';
       db.append(bm,bp); dr.append(dl,di,du,db);
       el.append(top,pt,stat,dv,dr); grid.appendChild(el);
-      tog.addEventListener('click',()=>{ if(!z.sw)return; const on=this._hass.states[z.sw]?.state==='on'; this._svc('switch',on?'turn_off':'turn_on',{entity_id:z.sw}); });
+      tog.addEventListener('click',()=>{
+        if (!z.sw) return;
+        const isOn = this._hass.states[z.sw]?.state==='on';
+        const action = isOn ? 'turn_off' : 'turn_on';
+        const msg = isOn ? `Turn off ${z.name}?` : `Turn on ${z.name}?`;
+        const okClass = isOn ? 'confirm-btn--danger' : 'confirm-btn--ok';
+        this._confirm(z.name, msg, okClass).then(ok => {
+          if (ok) this._svc('switch', action, {entity_id:z.sw});
+        });
+      });
       const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); if(this._onTimes[i])this._onTimes[i].totalSecs=val*60; };
       di.addEventListener('change',()=>applyDur(parseFloat(di.value)||0));
       bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-5));
@@ -938,6 +997,19 @@ class SprinklerDashCardV2 extends HTMLElement {
         desc:`If tank level drops below ${this._cfg.jojo_low_pct||35}%, all running zones are immediately switched off. Jojo info bar turns red.`,
       },
     ];
+    // confirm actions toggle (stored at top level, not inside rules)
+    const confirmRow=document.createElement('div'); confirmRow.className='rule-item'+(this._cfg.confirm_actions?' rule-item--enabled':'');
+    const confirmCb=document.createElement('input'); confirmCb.type='checkbox'; confirmCb.className='rule-cb'; confirmCb.checked=this._cfg.confirm_actions!==false;
+    const confirmTxt=document.createElement('div'); confirmTxt.className='rule-text';
+    const confirmTitle=document.createElement('div'); confirmTitle.className='rule-title'; confirmTitle.textContent='Confirm before activating';
+    const confirmDesc=document.createElement('div'); confirmDesc.className='rule-desc'; confirmDesc.textContent='Show a confirmation popup before turning zones on/off, All Off, Start Schedule, and schedule toggle.';
+    confirmTxt.append(confirmTitle,confirmDesc);
+    confirmCb.addEventListener('change',()=>{
+      confirmRow.className='rule-item'+(confirmCb.checked?' rule-item--enabled':'');
+      this._cfg.confirm_actions=confirmCb.checked;
+      this._saveConfig({confirm_actions:confirmCb.checked});
+    });
+    confirmRow.append(confirmCb,confirmTxt); s5.appendChild(confirmRow);
     rulesDef.forEach(rd=>{
       const enabled = rules[rd.key]!==false;
       const ruleEl=document.createElement('div'); ruleEl.className='rule-item'+(enabled?' rule-item--enabled':'');
