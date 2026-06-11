@@ -1,5 +1,5 @@
 const CARD_VERSION = 7;
-const MAX_ZONES = 10;
+const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
   { label:'Jojo Level',    icon:'water-well',         sensor1:'sensor.jojo_liters_left',                     sensor2:'sensor.jojo_tank_level_liquid_level', enabled:true },
@@ -18,6 +18,8 @@ const DEFAULT_CONFIG = {
     { name:'Blombak',      sw:'switch.sonoff_1001e74824_4', dur:'input_number.valve_8_time',  schedule_enabled:true },
     { name:'Zone 9',       sw:'', dur:'',  schedule_enabled:true },
     { name:'Zone 10',      sw:'', dur:'',  schedule_enabled:true },
+    { name:'Zone 11',      sw:'', dur:'',  schedule_enabled:true },
+    { name:'Zone 12',      sw:'', dur:'',  schedule_enabled:true },
   ],
   active_zones: 8,
   schedule_entity: 'switch.schedule_sprinkler_scheduler',

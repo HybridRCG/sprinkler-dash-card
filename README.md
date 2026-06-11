@@ -172,6 +172,7 @@ Layout auto-adjusts: 1 enabled = full width, 2 = 50/50, 3 = 3 equal columns, 4 =
 
 | Version | Changes |
 |---|---|
+| v2.2.1 | Max zones increased to 12; screenshots added to README |
 | v2.2.0 | Confirmation popup on zones, All Off, Start Schedule, schedule toggle; enable/disable in rules settings; fixed script delay format (was hours, now minutes) |
 | v2.1.0 | Settings save via websocket (works in sections layout); frozen config deep-clone fix; all settings now persist on hard refresh |
 | v2.0.0 | Auto-creates `script.sprinkler` and Scheduler entity on first load; zone schedule checkbox; automation rules panel; sticky setup instructions with always-visible buttons; bigger fonts; info bar items clickable |
