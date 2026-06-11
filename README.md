@@ -8,6 +8,18 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 
 ---
 
+## Screenshots
+
+| Main Card | Zones & Info Bar | Schedule |
+|---|---|---|
+| ![Main](Sprinkler1.png) | ![Zones](Sprinkler2.png) | ![Schedule](Sprinkler3.png) |
+
+| Settings — General | Settings — Info Bar & Rules |
+|---|---|
+| ![Settings 1](Sprinkler_Settings1.png) | ![Settings 2](Sprinkler_Settings2.png) |
+
+---
+
 ## Features
 
 - **Up to 10 configurable zones** — 2-column grid with toggle switch, progress bar, countdown timer, and adjustable duration
