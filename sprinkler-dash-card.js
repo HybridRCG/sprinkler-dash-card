@@ -1195,8 +1195,9 @@ class SprinklerDashCardV2 extends HTMLElement {
         parts.push(val2+(unit2?' '+unit2:''));
       }
 
-      const txt = document.createTextNode(parts.join(' '));
-      it.appendChild(txt);
+      const cap = s => s ? s.split(' ').map(w => w.charAt(0).toUpperCase()+w.slice(1)).join(' ') : s;
+      const finalText = parts.map((p,i) => i===0 ? cap(p) : p.replace(/^(·|- ?)(.+)/, (m,pre,val) => pre+cap(val))).join(' ');
+      it.appendChild(document.createTextNode(finalText));
       if (warn) it.style.color='#ffcc44';
       // click opens more-info for sensor1
       if (slot.sensor1) {
