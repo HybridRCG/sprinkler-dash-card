@@ -1182,10 +1182,10 @@ class SprinklerDashCardV2 extends HTMLElement {
             }
             parts.push(parseFloat(val1).toLocaleString()+unit1+' ('+pct.toFixed(0)+'%)');
           } else {
-            parts.push(val1+(unit1?' '+unit1:''));
+            parts.push(val1+(unit1 ? (unit1==='%' ? unit1 : ' '+unit1) : ''));
             if (s2) {
               const val2=s2.state, unit2=s2.attributes.unit_of_measurement||'';
-              parts.push('· '+val2+(unit2?' '+unit2:''));
+              parts.push('· '+val2+(unit2 ? (unit2==='%' ? unit2 : ' '+unit2) : ''));
             }
           }
         }
