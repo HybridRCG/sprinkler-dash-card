@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your duration helpers, and everything else is configured and auto-created from the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.2.5-green)
+![Version](https://img.shields.io/badge/version-v2.3.0-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 
@@ -201,6 +201,7 @@ All settings are saved directly into the HA dashboard config via websocket — t
 
 | Version | Changes |
 |---|---|
+| v2.3.0 | Section headings now white/bold for better visibility; Active Zones controls merged into Zones header line (right-justified); Automation Rules hint text added; title-case all info bar values; unified dash separator for dual sensors |
 | v2.2.5 | Title-case all info bar sensor values (e.g. `partly cloudy` → `Partly Cloudy`) |
 | v2.2.4 | Unified dual-sensor display — all slots use dash separator (e.g. `4,650L - 93%`, `Possible - 55%`); removed space before `%` unit |
 | v2.2.2 | Max zones increased to 12; screenshots in README |

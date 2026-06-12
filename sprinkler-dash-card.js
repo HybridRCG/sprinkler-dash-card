@@ -304,7 +304,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zdur-btn:active{transform:scale(0.93)}
     .sched-wrap{margin:0 6px 6px;border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);overflow:hidden}
     .sched-hdr{display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,0.05)}
-    .sched-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#777);flex:1}
+    .sched-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--primary-text-color,#f0f0f0);flex:1}
     .stoggle{position:relative;width:32px;height:18px;border-radius:9px;background:rgba(255,255,255,0.12);cursor:pointer;flex-shrink:0;transition:background .25s}
     .stoggle--on{background:#1a8a64}
     .stoggle-thumb{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .25s;box-shadow:0 1px 3px rgba(0,0,0,0.4)}
@@ -326,7 +326,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     .cfg-body{overflow-y:auto;flex:1}
     .cfg-section{padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.05)}
     .cfg-section:last-child{border-bottom:none}
-    .cfg-label{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#666);margin-bottom:6px;font-weight:600}
+    .cfg-label{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--primary-text-color,#f0f0f0);margin-bottom:6px;font-weight:700}
     .cfg-zone-count{display:flex;align-items:center;gap:8px}
     .cfg-count-btn{width:28px;height:28px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#ccc);font-size:17px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;transition:background .15s;flex-shrink:0}
     .cfg-count-btn:hover{background:rgba(26,138,100,0.3);border-color:#1a8a64;color:#4dc49a}
@@ -796,10 +796,11 @@ class SprinklerDashCardV2 extends HTMLElement {
     const body=document.createElement('div'); body.className='cfg-body';
     panel.appendChild(body);
 
-    // ── Active zones ──
-    const s1=document.createElement('div'); s1.className='cfg-section';
-    const l1=document.createElement('div'); l1.className='cfg-label'; l1.textContent='Active Zones';
-    const czrow=document.createElement('div'); czrow.className='cfg-zone-count';
+    // ── Zone list + active zone count on same header line ──
+    const s2=document.createElement('div'); s2.className='cfg-section';
+    const zoneHdr=document.createElement('div'); zoneHdr.style.cssText='display:flex;align-items:center;justify-content:space-between;margin-bottom:6px';
+    const l2=document.createElement('div'); l2.className='cfg-label'; l2.style.margin='0'; l2.textContent='Zones — drag to reorder';
+    const czrow=document.createElement('div'); czrow.className='cfg-zone-count'; czrow.style.cssText='display:flex;align-items:center;gap:6px';
     const bm=document.createElement('button'); bm.className='cfg-count-btn'; bm.textContent='-';
     const bp=document.createElement('button'); bp.className='cfg-count-btn'; bp.textContent='+';
     const cv=document.createElement('div'); cv.className='cfg-count-val'; cv.id='cfg-count-val'; cv.textContent=this._cfg.active_zones;
@@ -808,7 +809,6 @@ class SprinklerDashCardV2 extends HTMLElement {
       const n=Math.max(1,this._cfg.active_zones-1);
       this._saveConfig({active_zones:n}); cv.textContent=n;
       this._buildZoneGrid(); this._update();
-      // refresh list so inactive styling updates
       this._renderConfigPanel();
     });
     bp.addEventListener('click',()=>{
@@ -817,13 +817,10 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._buildZoneGrid(); this._update();
       this._renderConfigPanel();
     });
-    czrow.append(bm,cv,cm,bp); s1.append(l1,czrow);
-
-    // ── Zone list ──
-    const s2=document.createElement('div'); s2.className='cfg-section';
-    const l2=document.createElement('div'); l2.className='cfg-label'; l2.textContent='Zones — drag to reorder';
+    czrow.append(bm,cv,cm,bp);
+    zoneHdr.append(l2,czrow);
     const zlist=document.createElement('div'); zlist.className='cfg-zone-list';
-    s2.append(l2,zlist);
+    s2.append(zoneHdr,zlist);
 
     // only show active zones in the list
     this._cfg.zones.slice(0, this._cfg.active_zones).forEach((z,i)=>{
@@ -983,7 +980,9 @@ class SprinklerDashCardV2 extends HTMLElement {
 
     // ── Rules ──
     const s5=document.createElement('div'); s5.className='cfg-section';
-    const l5=document.createElement('div'); l5.className='cfg-label'; l5.textContent='Automation Rules';
+    const l5=document.createElement('div'); l5.className='cfg-label'; l5.textContent='Automation Rules'; 
+    const l5hint=document.createElement('span'); l5hint.style.cssText='font-size:10px;font-weight:400;text-transform:none;letter-spacing:0;color:var(--secondary-text-color,#666);margin-left:6px'; l5hint.textContent='(untick rules not needed)';
+    l5.appendChild(l5hint);
     s5.appendChild(l5);
 
     const rules = this._cfg.rules || {};
@@ -1028,7 +1027,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       ruleEl.append(cb,txt); s5.appendChild(ruleEl);
     });
 
-    body.append(s1,s2,s3,s4,s5);
+    body.append(s2,s3,s4,s5);
   }
 
   _doSave(btn) {
