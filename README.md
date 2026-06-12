@@ -2,9 +2,15 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your duration helpers, and everything else is configured and auto-created from the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.0.0-green)
+![Version](https://img.shields.io/badge/version-v2.2.2-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
+
+---
+
+## Support the Project
+
+[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/hybridrcg)
 
 ---
 
@@ -185,6 +191,10 @@ Layout auto-adjusts: 1 enabled = full width, 2 = 50/50, 3 = 3 equal columns, 4 =
 | v1.2.0 | Built-in scheduler section; progress bar; live duration countdown |
 | v1.1.0 | All Off direct switch calls; +/- duration buttons; sequence numbers |
 | v1.0.0 | Initial release |
+
+---
+
+[![Buy Me A Coffee](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/hybridrcg)
 
 ---
 
