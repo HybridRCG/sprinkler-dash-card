@@ -1180,12 +1180,13 @@ class SprinklerDashCardV2 extends HTMLElement {
               const running=this._activeZones().map(z=>z.sw).filter(sw=>sw&&this._hass.states[sw]?.state==='on');
               if (running.length) { this._svc('switch','turn_off',{entity_id:running}); }
             }
-            parts.push(parseFloat(val1).toLocaleString()+unit1+' ('+pct.toFixed(0)+'%)');
+            const unit1=s1.attributes.unit_of_measurement||'';
+            parts.push(parseFloat(val1).toLocaleString()+(unit1?' '+unit1:'')+' - '+pct.toFixed(0)+'%');
           } else {
             parts.push(val1+(unit1 ? (unit1==='%' ? unit1 : ' '+unit1) : ''));
             if (s2) {
               const val2=s2.state, unit2=s2.attributes.unit_of_measurement||'';
-              parts.push('· '+val2+(unit2 ? (unit2==='%' ? unit2 : ' '+unit2) : ''));
+              parts.push('- '+val2+(unit2 ? (unit2==='%' ? unit2 : ' '+unit2) : ''));
             }
           }
         }

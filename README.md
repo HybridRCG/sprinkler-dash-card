@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your duration helpers, and everything else is configured and auto-created from the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.2.2-green)
+![Version](https://img.shields.io/badge/version-v2.2.4-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 
@@ -201,6 +201,7 @@ All settings are saved directly into the HA dashboard config via websocket — t
 
 | Version | Changes |
 |---|---|
+| v2.2.4 | Unified dual-sensor display — all slots use dash separator (e.g. `4,650L - 93%`, `Possible - 55%`); removed space before `%` unit |
 | v2.2.2 | Max zones increased to 12; screenshots in README |
 | v2.2.0 | Confirmation popups on all actions (zones, All Off, Start Schedule, schedule toggle); enable/disable in rules; script delay format fixed (was hours, now minutes) |
 | v2.1.0 | Settings save via websocket; frozen config deep-clone fix; all settings persist on hard refresh |
