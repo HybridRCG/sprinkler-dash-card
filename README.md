@@ -20,9 +20,9 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 |---|---|---|
 | ![Main](Sprinkler1.png) | ![Zones](Sprinkler2.png) | ![Schedule](Sprinkler3.png) |
 
-| Settings — General | Settings — Info Bar & Rules |
-|---|---|
-| ![Settings 1](Sprinkler_Settings1.png) | ![Settings 2](Sprinkler_Settings2.png) |
+| Skip Next Run | Settings — General | Settings — Info Bar & Rules |
+|---|---|---|
+| ![Skip Next Run](Sprinkler_exclude_next_run.png) | ![Settings 1](Sprinkler_Settings1.png) | ![Settings 2](Sprinkler_Settings2.png) |
 
 ---
 
