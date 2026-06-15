@@ -132,6 +132,28 @@ class SprinklerDashCardV2 extends HTMLElement {
   _svc(domain, service, data) { this._hass.callService(domain, service, data); }
   _activeZones() { return this._cfg.zones.slice(0, this._cfg.active_zones); }
 
+  _skipList() {
+    const s = this._hass.states['input_text.sprinkler_skip_zones']?.state || '';
+    return s.split(',').map(x=>x.trim()).filter(Boolean);
+  }
+
+  _isZoneSkipped(z) {
+    if (!z.sw) return false;
+    return this._skipList().includes(z.sw);
+  }
+
+  _toggleSkip(z) {
+    const e = 'input_text.sprinkler_skip_zones';
+    if (!this._hass.states[e]) {
+      console.warn('[SprinklerCard] skip helper not ready yet');
+      return;
+    }
+    const cur = this._skipList();
+    const isSkipped = cur.includes(z.sw);
+    const next = isSkipped ? cur.filter(x=>x!==z.sw) : [...cur, z.sw];
+    this._svc('input_text','set_value',{entity_id:e, value: next.join(',')});
+  }
+
   _saveConfig(patch) {
     for (const key of Object.keys(patch)) this._cfg[key] = patch[key];
     if (patch.zones !== undefined) {
@@ -192,12 +214,38 @@ class SprinklerDashCardV2 extends HTMLElement {
     const zones = this._activeZones().filter(z => z.sw && z.schedule_enabled !== false);
     if (!zones.length) return Promise.resolve();
 
+    const skipEntity = 'input_text.sprinkler_skip_zones';
+    const hasSkipHelper = !!this._hass.states[skipEntity];
+
     const sequence = [];
     zones.forEach(z => {
-      sequence.push({ action:'switch.turn_on', target:{ entity_id: z.sw } });
-      // use dict format: {minutes: X} — unambiguous, no HH:MM:SS confusion
-      sequence.push({ delay: { minutes: `{{ states('${z.dur}') | float(10) | int }}` } });
-      sequence.push({ action:'switch.turn_off', target:{ entity_id: z.sw } });
+      if (hasSkipHelper) {
+        // if this zone is in the skip list: remove it from the list (self-clearing) and don't water
+        // otherwise: run normally
+        sequence.push({
+          if: [{
+            condition: 'template',
+            value_template: `{{ '${z.sw}' in (states('${skipEntity}') | default('','')).split(',') }}`,
+          }],
+          then: [{
+            action: 'input_text.set_value',
+            target: { entity_id: skipEntity },
+            data: {
+              value: `{{ (states('${skipEntity}') | default('','')).split(',') | reject('eq','${z.sw}') | reject('eq','') | list | join(',') }}`,
+            },
+          }],
+          else: [
+            { action:'switch.turn_on', target:{ entity_id: z.sw } },
+            { delay: { minutes: `{{ states('${z.dur}') | float(10) | int }}` } },
+            { action:'switch.turn_off', target:{ entity_id: z.sw } },
+          ],
+        });
+      } else {
+        // skip helper not available yet — run normally
+        sequence.push({ action:'switch.turn_on', target:{ entity_id: z.sw } });
+        sequence.push({ delay: { minutes: `{{ states('${z.dur}') | float(10) | int }}` } });
+        sequence.push({ action:'switch.turn_off', target:{ entity_id: z.sw } });
+      }
     });
 
     return this._hass.callApi('POST', 'config/script/config/sprinkler', {
@@ -216,12 +264,41 @@ class SprinklerDashCardV2 extends HTMLElement {
       s.entity_id.startsWith('switch.schedule_') &&
       (s.attributes.entities||[]).includes('script.sprinkler')
     );
-    if (needsScript) {
-      this._createSprinklerScript().then(() => {
-        if (needsSched) setTimeout(() => this._createSchedulerEntity(), 1200);
+    const needsSkipHelper = !this._hass.states['input_text.sprinkler_skip_zones'];
+
+    const afterHelper = (helperJustCreated) => {
+      if (needsScript || helperJustCreated) {
+        this._createSprinklerScript().then(() => {
+          if (needsSched) setTimeout(() => this._createSchedulerEntity(), 1200);
+        });
+      } else if (needsSched) {
+        this._createSchedulerEntity();
+      }
+    };
+
+    if (needsSkipHelper) {
+      // create helper, then wait briefly for HA state to propagate before building the script
+      this._createSkipHelper().then(() => setTimeout(()=>afterHelper(true), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
+    } else {
+      afterHelper(false);
+    }
+  }
+
+  async _createSkipHelper() {
+    // create input_text.sprinkler_skip_zones via the direct websocket helper-creation command
+    try {
+      await this._hass.connection.sendMessagePromise({
+        type: 'input_text/create',
+        name: 'Sprinkler Skip Zones',
+        max: 255,
+        min: 0,
+        mode: 'text',
+        initial: '',
+        icon: 'mdi:calendar-remove',
       });
-    } else if (needsSched) {
-      this._createSchedulerEntity();
+      console.log('[SprinklerCard] created input_text.sprinkler_skip_zones');
+    } catch(e) {
+      console.warn('[SprinklerCard] could not auto-create skip helper — per-zone skip will be unavailable until input_text.sprinkler_skip_zones exists', e);
     }
   }
 
@@ -285,6 +362,12 @@ class SprinklerDashCardV2 extends HTMLElement {
     .ztoggle--on{background:#1a8a64}
     .ztoggle-thumb{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:transform .25s;box-shadow:0 1px 3px rgba(0,0,0,0.4)}
     .ztoggle--on .ztoggle-thumb{transform:translateX(14px)}
+    .zskip{width:20px;height:20px;border-radius:50%;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:var(--secondary-text-color,#666);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;transition:all .15s;--mdc-icon-size:13px}
+    .zskip:hover{border-color:rgba(255,180,60,0.5);color:#ffb43c}
+    .zskip--active{background:rgba(255,180,60,0.18);border-color:rgba(255,180,60,0.5);color:#ffb43c}
+    .zone--skip{border-color:rgba(255,180,60,0.4);border-style:dashed}
+    .zone--skip::before{background:repeating-linear-gradient(90deg,#ffb43c 0 6px,transparent 6px 12px)!important}
+    .zstat--skip{color:#ffb43c}
     .zprog-track{height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;margin-bottom:4px}
     .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width .9s linear}
     .zstat{font-size:11px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:14px;margin-bottom:5px}
@@ -497,7 +580,10 @@ class SprinklerDashCardV2 extends HTMLElement {
         <p>4 slots are available. Each slot has an enable checkbox, label, MDI icon (searchable), and up to 2 sensors. Tap any info bar item to open the entity detail. Layout auto-adjusts: 1=full, 2=50/50, 3=3-col, 4=2×2.</p>
 
         <h4>Step 7 — Automation rules in ⚙️</h4>
-        <p>Enable or disable the built-in rules at the bottom of settings: <b>Rain auto-disable</b> and <b>Jojo low-level shutoff</b>. Each rule shows its current threshold.</p>
+        <p>Enable or disable the built-in rules at the bottom of settings: <b>Confirm before activating</b>, <b>Rain auto-disable</b>, and <b>Jojo low-level shutoff</b>. Each rule shows its current threshold.</p>
+
+        <h4>Skip next run (per zone)</h4>
+        <p>Tap the <b>calendar-remove</b> icon next to any zone name to mark it as skipped for the next run only. The zone gets an amber dashed border and shows "Skip next run". No confirmation needed — tap again to cancel. When the schedule (or Start Schedule) next runs, that zone is bypassed and the skip automatically clears itself — no setup required, the card creates a small helper for this on first load.</p>
 
         <h4>Schedule section</h4>
         <p>The toggle enables/disables the schedule. Tap day pills to toggle run days. Tap the time to edit it. The countdown shows when the schedule next fires.</p>
@@ -584,9 +670,12 @@ class SprinklerDashCardV2 extends HTMLElement {
       const top=document.createElement('div'); top.className='ztop';
       const seq=document.createElement('div'); seq.className='zseq'; seq.id='zseq-'+i; seq.textContent=i+1;
       const name=document.createElement('span'); name.className='zname'; name.textContent=z.name;
+      const skip=document.createElement('div'); skip.className='zskip'; skip.id='zskip-'+i;
+      skip.title='Skip next scheduled run';
+      const skipIcon=document.createElement('ha-icon'); skipIcon.setAttribute('icon','mdi:calendar-remove'); skip.appendChild(skipIcon);
       const tog=document.createElement('div'); tog.className='ztoggle'; tog.id='ztog-'+i;
       tog.appendChild(Object.assign(document.createElement('div'),{className:'ztoggle-thumb'}));
-      top.append(seq,name,tog);
+      top.append(seq,name,skip,tog);
       const pt=document.createElement('div'); pt.className='zprog-track';
       const pf=document.createElement('div'); pf.className='zprog-fill'; pf.id='zprog-'+i; pt.appendChild(pf);
       const stat=document.createElement('div'); stat.className='zstat'; stat.id='zstat-'+i; stat.textContent='Ready';
@@ -601,6 +690,10 @@ class SprinklerDashCardV2 extends HTMLElement {
       const bp=document.createElement('button'); bp.className='zdur-btn'; bp.textContent='+';
       db.append(bm,bp); dr.append(dl,di,du,db);
       el.append(top,pt,stat,dv,dr); grid.appendChild(el);
+      skip.addEventListener('click',()=>{
+        if (!z.sw) return;
+        this._toggleSkip(z);
+      });
       tog.addEventListener('click',()=>{
         if (!z.sw) return;
         const isOn = this._hass.states[z.sw]?.state==='on';
@@ -1229,12 +1322,17 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._prevDurVals[i]=durVal;
       this.shadowRoot.getElementById('zone-'+i)?.classList.toggle('zone--on',isOn);
       this.shadowRoot.getElementById('zone-'+i)?.classList.toggle('zone--disabled', z.schedule_enabled===false);
+      const skipped = this._isZoneSkipped(z);
+      this.shadowRoot.getElementById('zone-'+i)?.classList.toggle('zone--skip', skipped && !isOn);
+      this.shadowRoot.getElementById('zskip-'+i)?.classList.toggle('zskip--active', skipped);
+      const skipEl = this.shadowRoot.getElementById('zskip-'+i);
+      if (skipEl) skipEl.title = skipped ? 'Skipped — tap to cancel' : 'Skip next scheduled run';
       this.shadowRoot.getElementById('zseq-'+i)?.classList.toggle('zseq--on',isOn);
       this.shadowRoot.getElementById('ztog-'+i)?.classList.toggle('ztoggle--on',isOn);
       const inp=this.shadowRoot.getElementById('zdur-'+i);
       if(inp&&inp!==this.shadowRoot.activeElement){inp.min=durMin;inp.max=durMax;inp.value=durVal;}
       const elapsed=isOn&&this._onTimes[i]?(Date.now()-this._onTimes[i].ts)/1000:0;
-      this._renderProgress(i,isOn,elapsed,this._onTimes[i]?.totalSecs||durVal*60);
+      this._renderProgress(i,isOn,elapsed,this._onTimes[i]?.totalSecs||durVal*60, skipped);
     });
     const badge=this.shadowRoot.getElementById('hdr-badge');
     if(badge){badge.textContent=active>0?active+' watering':this._cfg.active_zones+' zones';badge.className='badge'+(active>0?' badge--active':'');}
@@ -1258,10 +1356,15 @@ class SprinklerDashCardV2 extends HTMLElement {
     }
   }
 
-  _renderProgress(i,isOn,elapsed,total){
+  _renderProgress(i,isOn,elapsed,total,skipped){
     const prog=this.shadowRoot.getElementById('zprog-'+i), stat=this.shadowRoot.getElementById('zstat-'+i);
     if(!prog||!stat)return;
-    if(!isOn||total===0){prog.style.width='0%';stat.className='zstat';stat.textContent='Ready';return;}
+    if(!isOn||total===0){
+      prog.style.width='0%';
+      if (skipped) { stat.className='zstat zstat--skip'; stat.textContent='Skip next run'; }
+      else { stat.className='zstat'; stat.textContent='Ready'; }
+      return;
+    }
     prog.style.width=Math.min(100,(elapsed/total)*100).toFixed(2)+'%';
     const rem=Math.max(0,Math.round(total-elapsed)),m=Math.floor(rem/60),s=rem%60;
     stat.className='zstat zstat--on'; stat.innerHTML='';
@@ -1275,7 +1378,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const isOn=z.sw&&this._hass.states[z.sw]?.state==='on';
       const durVal=z.dur?parseFloat(this._hass.states[z.dur]?.state||10):10;
       const elapsed=isOn&&this._onTimes[i]?(Date.now()-this._onTimes[i].ts)/1000:0;
-      this._renderProgress(i,isOn,elapsed,this._onTimes[i]?.totalSecs||durVal*60);
+      this._renderProgress(i,isOn,elapsed,this._onTimes[i]?.totalSecs||durVal*60, this._isZoneSkipped(z));
     });
     this._updateSchedule(); this._updateMeta();
   }

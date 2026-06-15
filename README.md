@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your duration helpers, and everything else is configured and auto-created from the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.3.0-green)
+![Version](https://img.shields.io/badge/version-v2.4.0-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 
@@ -33,6 +33,7 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 - **Auto-creates everything** — on first load creates `script.sprinkler` and the Scheduler entity automatically; no manual scripting needed
 - **Script auto-rebuilds** — whenever you change zones, reorder them, or toggle their schedule checkbox the script silently rebuilds in the background
 - **Zone schedule toggle** — tick/untick each zone to include or skip it in scheduled runs
+- **Skip next run (per zone)** — one-tap "skip next run" on any zone, self-clearing after the schedule (or Start Schedule) next fires
 - **Built-in scheduler section** — enable/disable, set run days, set run time, shows next run countdown
 - **4-slot configurable info bar** — label, searchable MDI icon, up to 2 sensors per slot; tap any slot to open the entity detail popup
 - **Searchable entity picker** — find any HA entity by typing in all entity fields
@@ -166,6 +167,16 @@ At the bottom of settings, three rules can be individually toggled:
 
 ---
 
+## Skip Next Run (per zone)
+
+Tap the **calendar-remove** icon next to any zone's name to mark it as skipped for the next run only — no confirmation needed, tap again to cancel. The zone gets an amber dashed border and shows "Skip next run" in place of "Ready".
+
+When the schedule (or **Start Schedule**) next runs, that zone is bypassed entirely and the skip **automatically clears itself** — back to normal for the run after that. This is useful when you've watered a bed manually and don't want the automated run to water it again that night.
+
+No setup required — the card auto-creates a small `input_text.sprinkler_skip_zones` helper on first load to track this. If a zone's switch entity changes or the zone is removed, any stale skip entry is simply ignored (harmless).
+
+---
+
 ## How All Off and Start Schedule work
 
 - **All Off** — calls `switch.turn_off` on all active zone switches simultaneously. No script involved. Shows a confirmation popup first (if enabled).
@@ -201,6 +212,7 @@ All settings are saved directly into the HA dashboard config via websocket — t
 
 | Version | Changes |
 |---|---|
+| v2.4.0 | Per-zone "skip next run" — one-tap, self-clearing skip for the next scheduled run; auto-creates `input_text.sprinkler_skip_zones` helper |
 | v2.3.0 | Section headings now white/bold for better visibility; Active Zones controls merged into Zones header line (right-justified); Automation Rules hint text added; title-case all info bar values; unified dash separator for dual sensors |
 | v2.2.5 | Title-case all info bar sensor values (e.g. `partly cloudy` → `Partly Cloudy`) |
 | v2.2.4 | Unified dual-sensor display — all slots use dash separator (e.g. `4,650L - 93%`, `Possible - 55%`); removed space before `%` unit |
