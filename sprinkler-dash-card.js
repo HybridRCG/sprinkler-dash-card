@@ -1208,7 +1208,7 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _saveTime(ts) {
     const e=this._cfg.schedule_entity; if(!e)return;
-    this._svc('scheduler','edit',{entity_id:e,timeslots:[{start:ts+':00',stop:null,actions:[{service:'script.turn_on',entity_id:'script.sprinkler'}]}]});
+    this._svc('scheduler','edit',{entity_id:e,timeslots:[{start:ts+':00',actions:[{service:'script.turn_on',entity_id:'script.sprinkler'}]}]});
   }
 
   _update() { this._updateMeta(); this._updateZones(); this._updateSchedule(); }
