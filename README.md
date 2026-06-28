@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your duration helpers, and everything else is configured and auto-created from the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.4.1-green)
+![Version](https://img.shields.io/badge/version-v2.4.2-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 
@@ -212,6 +212,7 @@ All settings are saved directly into the HA dashboard config via websocket — t
 
 | Version | Changes |
 |---|---|
+| v2.4.2 | Duration +/- buttons now increment by 1 minute instead of 5 for fine-grained control |
 | v2.4.1 | Fixed schedule time editing — `stop: null` was crashing the Scheduler integration's time validator, causing a 500 error on save |
 | v2.4.0 | Per-zone "skip next run" — one-tap, self-clearing skip for the next scheduled run; auto-creates `input_text.sprinkler_skip_zones` helper |
 | v2.3.0 | Section headings now white/bold for better visibility; Active Zones controls merged into Zones header line (right-justified); Automation Rules hint text added; title-case all info bar values; unified dash separator for dual sensors |
