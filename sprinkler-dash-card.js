@@ -30,9 +30,11 @@ const DEFAULT_CONFIG = {
   rain_threshold: 5,
   jojo_low_pct: 35,
   meta_slots: JSON.parse(JSON.stringify(DEFAULT_META_SLOTS)),
+  rain_restore_hours: 48,
   rules: {
     rain_disable_schedule: true,
     jojo_shutoff_zones: true,
+    rain_auto_restore: true,
   },
   confirm_actions: true,
 };
@@ -57,7 +59,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._mdiLoaded = false;
     this._scriptChecked = false;
     this._pendingEdits = {};
-    this._saveDebounce = null; // key: 'zone-N-name' etc, value: current typed value
+    this._saveDebounce = null;
+    this._rainDisabledAt = null; // key: 'zone-N-name' etc, value: current typed value
   }
 
   setConfig(config) {
@@ -113,11 +116,53 @@ class SprinklerDashCardV2 extends HTMLElement {
   disconnectedCallback() { clearInterval(this._tickInterval); }
 
   set hass(hass) {
+    const prevHass = this._hass;
     this._hass = hass;
     if (this._allEntities.length === 0) this._allEntities = Object.keys(hass.states).sort();
     if (!this._mdiLoaded) this._loadMdiIcons();
     if (!this._built) { this._buildShell(); this._built=true; }
     this._ensureSprinklerScript();
+
+    // toggle Stop Schedule / Start Schedule based on script state
+    const scriptState = hass.states['script.sprinkler']?.state;
+    const prevScriptState = prevHass?.states['script.sprinkler']?.state;
+    if (scriptState !== prevScriptState) {
+      const stopBtn = this.shadowRoot.getElementById('btn-stop-sched');
+      const startBtn = this.shadowRoot.getElementById('btn-start');
+      if (stopBtn && startBtn) {
+        const running = scriptState === 'on';
+        stopBtn.style.display = running ? '' : 'none';
+        startBtn.style.display = running ? 'none' : '';
+      }
+      // record last run when script finishes
+      if (prevScriptState === 'on' && scriptState === 'off') {
+        this._recordLastRun();
+      }
+    }
+
+    // rain auto-restore: if rain rule disabled the schedule, re-enable after rain_restore_hours
+    if (this._cfg.rules?.rain_auto_restore !== false) {
+      const schedE = this._cfg.schedule_entity;
+      const rainE = this._cfg.rain_sensor;
+      if (schedE && rainE) {
+        const schedState = hass.states[schedE];
+        const rainVal = parseFloat(hass.states[rainE]?.state || 0);
+        const rainThresh = this._cfg.rain_threshold || 5;
+        // if schedule is off AND rain is now below threshold AND was disabled by rain rule
+        if (schedState?.state === 'off' && rainVal < rainThresh) {
+          const disabledAt = this._rainDisabledAt;
+          if (disabledAt) {
+            const hoursElapsed = (Date.now() - disabledAt) / 3600000;
+            const restoreHours = this._cfg.rain_restore_hours || 48;
+            if (hoursElapsed >= restoreHours) {
+              this._rainDisabledAt = null;
+              this._svc('switch', 'turn_on', {entity_id: schedE});
+            }
+          }
+        }
+      }
+    }
+
     this._update();
   }
 
@@ -265,6 +310,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       (s.attributes.entities||[]).includes('script.sprinkler')
     );
     const needsSkipHelper = !this._hass.states['input_text.sprinkler_skip_zones'];
+    const needsLastRunHelper = !this._hass.states['input_text.sprinkler_last_run'];
 
     const afterHelper = (helperJustCreated) => {
       if (needsScript || helperJustCreated) {
@@ -276,11 +322,27 @@ class SprinklerDashCardV2 extends HTMLElement {
       }
     };
 
-    if (needsSkipHelper) {
-      // create helper, then wait briefly for HA state to propagate before building the script
-      this._createSkipHelper().then(() => setTimeout(()=>afterHelper(true), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
+    if (needsSkipHelper || needsLastRunHelper) {
+      const creates = [];
+      if (needsSkipHelper) creates.push(this._createSkipHelper());
+      if (needsLastRunHelper) creates.push(this._createLastRunHelper());
+      Promise.all(creates).then(() => setTimeout(()=>afterHelper(needsSkipHelper), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
     } else {
       afterHelper(false);
+    }
+  }
+
+  async _createLastRunHelper() {
+    try {
+      await this._hass.connection.sendMessagePromise({
+        type: 'input_text/create',
+        name: 'Sprinkler Last Run',
+        max: 255, min: 0, mode: 'text', initial: '',
+        icon: 'mdi:history',
+      });
+      console.log('[SprinklerCard] created input_text.sprinkler_last_run');
+    } catch(e) {
+      console.warn('[SprinklerCard] could not auto-create last run helper', e);
     }
   }
 
@@ -367,7 +429,24 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zskip--active{background:rgba(255,180,60,0.18);border-color:rgba(255,180,60,0.5);color:#ffb43c}
     .zone--skip{border-color:rgba(255,180,60,0.4);border-style:dashed}
     .zone--skip::before{background:repeating-linear-gradient(90deg,#ffb43c 0 6px,transparent 6px 12px)!important}
-    .zstat--skip{color:#ffb43c}
+    .hbtn--stop-sched{background:rgba(210,45,45,0.85);color:#fff}
+    .hbtn--lastrun{background:rgba(255,255,255,0.92);color:#0a5c45}
+    .zlast{font-size:10px;color:var(--secondary-text-color,#666);margin-top:2px;min-height:12px}
+    .zlast--recent{color:#4dc49a}
+    /* last-run modal */
+    .lastrun-modal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;padding:16px}
+    .lastrun-modal--open{display:flex}
+    .lastrun-box{background:#1a1a1a;border:1px solid rgba(77,196,154,0.3);border-radius:12px;max-width:400px;width:100%;max-height:75vh;display:flex;flex-direction:column;overflow:hidden}
+    .lastrun-hdr{display:flex;align-items:center;justify-content:space-between;padding:12px 14px 10px;border-bottom:1px solid rgba(77,196,154,0.15);flex-shrink:0;gap:8px}
+    .lastrun-hdr h3{margin:0;font-size:14px;color:#4dc49a;font-weight:700;flex:1;white-space:nowrap}
+    .lastrun-close-btn{padding:4px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#aaa);font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;flex-shrink:0}
+    .lastrun-close-btn:hover{background:rgba(255,255,255,0.12)}
+    .lastrun-body{padding:14px 16px;overflow-y:auto;flex:1;font-size:12px;color:var(--secondary-text-color,#aaa);line-height:1.7}
+    .lastrun-row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05)}
+    .lastrun-row:last-child{border-bottom:none}
+    .lastrun-zone{color:var(--primary-text-color,#eee)}
+    .lastrun-skipped{color:rgba(255,180,60,0.8);font-style:italic}
+    .lastrun-ts{font-size:11px;color:var(--secondary-text-color,#666);margin-bottom:8px}
     .zprog-track{height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;margin-bottom:4px}
     .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width .9s linear}
     .zstat{font-size:11px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:14px;margin-bottom:5px}
@@ -510,11 +589,14 @@ class SprinklerDashCardV2 extends HTMLElement {
       </div>
       <div class="hdr-meta" id="hdr-meta"></div>
       <div class="hdr-btns">
-        <button class="hbtn hbtn--stop" id="btn-off">
-          <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>All Off
-        </button>
         <button class="hbtn hbtn--start" id="btn-start">
           <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>Start Schedule
+        </button>
+        <button class="hbtn hbtn--stop-sched" id="btn-stop-sched" style="display:none">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>Stop Schedule
+        </button>
+        <button class="hbtn hbtn--lastrun" id="btn-lastrun">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>Last Run
         </button>
       </div>
     </div>
@@ -530,6 +612,15 @@ class SprinklerDashCardV2 extends HTMLElement {
           <div class="sched-time" id="sched-time">--:--</div>
           <div class="sched-next" id="sched-next">—</div>
         </div>
+      </div>
+    </div>
+    <div class="lastrun-modal" id="lastrun-modal">
+      <div class="lastrun-box">
+        <div class="lastrun-hdr">
+          <h3>🕐 Last Run</h3>
+          <button class="lastrun-close-btn" id="lastrun-close">Close</button>
+        </div>
+        <div class="lastrun-body" id="lastrun-body">No run recorded yet.</div>
       </div>
     </div>
     <div class="cfg-panel" id="cfg-panel"></div>
@@ -555,7 +646,7 @@ class SprinklerDashCardV2 extends HTMLElement {
         <p>Go to <b>Settings → Helpers → Add → Number</b> and create one per zone:</p>
         <ul>
           <li><code>input_number.valve_1_time</code> through <code>input_number.valve_8_time</code></li>
-          <li>Settings: min 0, max 60, step 1, unit <b>min</b></li>
+          <li>Settings: min 0, max 60, step 5, unit <b>min</b></li>
           <li>Add up to <code>valve_10_time</code> if using more than 8 zones</li>
         </ul>
 
@@ -615,8 +706,12 @@ class SprinklerDashCardV2 extends HTMLElement {
       r.getElementById('cfg-panel').classList.toggle('cfg-panel--open', this._showConfig);
       if (this._showConfig) this._renderConfigPanel();
     });
-    r.getElementById('btn-off').addEventListener('click', () => this._allOff());
     r.getElementById('btn-start').addEventListener('click', () => this._startSchedule());
+    r.getElementById('btn-stop-sched').addEventListener('click', () => this._stopSchedule());
+    r.getElementById('btn-lastrun').addEventListener('click', () => this._showLastRun());
+    r.getElementById('lastrun-close').addEventListener('click', () => {
+      r.getElementById('lastrun-modal').classList.remove('lastrun-modal--open');
+    });
     r.getElementById('sched-toggle').addEventListener('click', () => {
       const e = this._cfg.schedule_entity; if (!e) return;
       const isOn = this._hass.states[e]?.state==='on';
@@ -683,13 +778,14 @@ class SprinklerDashCardV2 extends HTMLElement {
       const dr=document.createElement('div'); dr.className='zdur-row';
       const dl=document.createElement('span'); dl.className='zdur-lbl'; dl.textContent='Min';
       const di=document.createElement('input'); di.type='number'; di.className='zdur-input';
-      di.id='zdur-'+i; di.min=0; di.max=60; di.step=1; di.value=10;
+      di.id='zdur-'+i; di.min=0; di.max=60; di.step=5; di.value=10;
       const du=document.createElement('span'); du.className='zdur-unit'; du.textContent='min';
       const db=document.createElement('div'); db.className='zdur-btns';
       const bm=document.createElement('button'); bm.className='zdur-btn'; bm.textContent='-';
       const bp=document.createElement('button'); bp.className='zdur-btn'; bp.textContent='+';
       db.append(bm,bp); dr.append(dl,di,du,db);
-      el.append(top,pt,stat,dv,dr); grid.appendChild(el);
+      const zlast=document.createElement('div'); zlast.className='zlast'; zlast.id='zlast-'+i;
+      el.append(top,pt,stat,zlast,dv,dr); grid.appendChild(el);
       skip.addEventListener('click',()=>{
         if (!z.sw) return;
         this._toggleSkip(z);
@@ -706,8 +802,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       });
       const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); if(this._onTimes[i])this._onTimes[i].totalSecs=val*60; };
       di.addEventListener('change',()=>applyDur(parseFloat(di.value)||0));
-      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-1));
-      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+1));
+      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-5));
+      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+5));
     });
   }
 
@@ -989,6 +1085,15 @@ class SprinklerDashCardV2 extends HTMLElement {
     const rtHint=document.createElement('span'); rtHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rtHint.textContent='mm → disable sched';
     rtRow.append(rtLbl,rtInp,rtHint); slist.appendChild(rtRow);
 
+    // rain restore hours
+    const rrRow=document.createElement('div'); rrRow.className='cfg-field-row';
+    const rrLbl=document.createElement('label'); rrLbl.className='cfg-field-lbl'; rrLbl.textContent='Rain restore';
+    const rrInp=document.createElement('input'); rrInp.type='number'; rrInp.className='cfg-field-input';
+    rrInp.value=this._cfg.rain_restore_hours||48; rrInp.placeholder='48'; rrInp.min=1; rrInp.max=168;
+    rrInp.dataset.cfgKey='rain_restore_hours';
+    const rrHint=document.createElement('span'); rrHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rrHint.textContent='h → re-enable sched';
+    rrRow.append(rrLbl,rrInp,rrHint); slist.appendChild(rrRow);
+
     // jojo low %
     const jlRow=document.createElement('div'); jlRow.className='cfg-field-row';
     const jlLbl=document.createElement('label'); jlLbl.className='cfg-field-lbl'; jlLbl.textContent='Jojo low %';
@@ -1086,6 +1191,11 @@ class SprinklerDashCardV2 extends HTMLElement {
         desc:`If rain sensor exceeds ${this._cfg.rain_threshold||5}mm, the schedule switch is automatically turned off. Rain value turns yellow in info bar.`,
       },
       {
+        key:'rain_auto_restore',
+        title:'Rain: Auto-restore schedule',
+        desc:`After rain disables the schedule, automatically re-enable it after ${this._cfg.rain_restore_hours||48}h (configurable above in Rain restore).`,
+      },
+      {
         key:'jojo_shutoff_zones',
         title:'Jojo: Low-level zone shutoff',
         desc:`If tank level drops below ${this._cfg.jojo_low_pct||35}%, all running zones are immediately switched off. Jojo info bar turns red.`,
@@ -1135,6 +1245,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (navEl) this._cfg.nav_path=navEl.value;
     const rtEl=panel.querySelector('[data-cfg-key="rain_threshold"]');
     if (rtEl) this._cfg.rain_threshold=parseFloat(rtEl.value)||5;
+    const rrEl=panel.querySelector('[data-cfg-key="rain_restore_hours"]');
+    if (rrEl) this._cfg.rain_restore_hours=parseFloat(rrEl.value)||48;
     const jlEl=panel.querySelector('[data-cfg-key="jojo_low_pct"]');
     if (jlEl) this._cfg.jojo_low_pct=parseFloat(jlEl.value)||35;
 
@@ -1199,6 +1311,56 @@ class SprinklerDashCardV2 extends HTMLElement {
     }
   }
 
+  _stopSchedule() {
+    this._confirm('Stop Schedule', 'Stop the running schedule and close all valves?', 'confirm-btn--danger').then(ok => {
+      if (!ok) return;
+      this._svc('script', 'turn_off', {entity_id: 'script.sprinkler'});
+      const allSwitches = this._activeZones().map(z=>z.sw).filter(Boolean);
+      if (allSwitches.length) this._svc('switch', 'turn_off', {entity_id: allSwitches});
+      this._activeZones().forEach((_,i)=>{ delete this._onTimes[i]; this._renderProgress(i,false,0,0,false); });
+    });
+  }
+
+  _showLastRun() {
+    const r = this.shadowRoot;
+    const body = r.getElementById('lastrun-body');
+    const raw = this._hass.states['input_text.sprinkler_last_run']?.state || '';
+    if (!raw || raw === 'unknown') {
+      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet. Run the schedule to see details here.</p>';
+    } else {
+      try {
+        const data = JSON.parse(raw);
+        const ts = data.ts ? new Date(data.ts).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+        let html = `<div class="lastrun-ts">Started: ${ts}</div>`;
+        (data.zones||[]).forEach(z => {
+          const skipped = z.skipped;
+          const dur = z.dur ? `${z.dur}m` : '—';
+          html += `<div class="lastrun-row">
+            <span class="${skipped?'lastrun-skipped':'lastrun-zone'}">${z.name}${skipped?' (skipped)':''}</span>
+            <span style="color:var(--secondary-text-color,#666)">${skipped?'—':dur}</span>
+          </div>`;
+        });
+        body.innerHTML = html;
+      } catch(e) {
+        body.textContent = raw;
+      }
+    }
+    r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
+  }
+
+  _recordLastRun() {
+    const e = 'input_text.sprinkler_last_run';
+    if (!this._hass.states[e]) return;
+    const skipList = this._skipList();
+    const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>({
+      name: z.name,
+      dur: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : null,
+      skipped: skipList.includes(z.sw),
+    }));
+    const data = JSON.stringify({ ts: new Date().toISOString(), zones });
+    this._svc('input_text', 'set_value', {entity_id: e, value: data.substring(0, 255)});
+  }
+
   _toggleDay(day) {
     const e=this._cfg.schedule_entity; if(!e)return;
     const cur=this._hass.states[e]?.attributes?.weekdays||[];
@@ -1260,8 +1422,10 @@ class SprinklerDashCardV2 extends HTMLElement {
             const numVal=parseFloat(val1)||0;
             if (numVal>=rainThresh && this._cfg.rules?.rain_disable_schedule!==false) {
               warn=true;
-              if (this._cfg.schedule_entity&&this._hass.states[this._cfg.schedule_entity]?.state==='on')
+              if (this._cfg.schedule_entity&&this._hass.states[this._cfg.schedule_entity]?.state==='on') {
                 this._svc('switch','turn_off',{entity_id:this._cfg.schedule_entity});
+                this._rainDisabledAt = Date.now(); // record when rain disabled the schedule
+              }
             }
           }
           if (s2 && slot.sensor2.includes('liquid_level')) {
@@ -1333,6 +1497,18 @@ class SprinklerDashCardV2 extends HTMLElement {
       if(inp&&inp!==this.shadowRoot.activeElement){inp.min=durMin;inp.max=durMax;inp.value=durVal;}
       const elapsed=isOn&&this._onTimes[i]?(Date.now()-this._onTimes[i].ts)/1000:0;
       this._renderProgress(i,isOn,elapsed,this._onTimes[i]?.totalSecs||durVal*60, skipped);
+      // last-run badge: show time since switch was last on (last_changed when state went off)
+      const zlastEl = this.shadowRoot.getElementById('zlast-'+i);
+      if (zlastEl && !isOn && z.sw) {
+        const swState = this._hass.states[z.sw];
+        const lc = swState?.last_changed;
+        if (lc) {
+          const mins = Math.round((Date.now() - new Date(lc).getTime()) / 60000);
+          if (mins < 60) { zlastEl.textContent='last: '+mins+'m ago'; zlastEl.className='zlast zlast--recent'; }
+          else if (mins < 1440) { zlastEl.textContent='last: '+Math.floor(mins/60)+'h ago'; zlastEl.className='zlast'; }
+          else { zlastEl.textContent='last: '+Math.floor(mins/1440)+'d ago'; zlastEl.className='zlast'; }
+        } else { zlastEl.textContent=''; }
+      } else if (zlastEl && isOn) { zlastEl.textContent=''; }
     });
     const badge=this.shadowRoot.getElementById('hdr-badge');
     if(badge){badge.textContent=active>0?active+' watering':this._cfg.active_zones+' zones';badge.className='badge'+(active>0?' badge--active':'');}
