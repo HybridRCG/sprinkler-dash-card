@@ -1526,7 +1526,16 @@ class SprinklerDashCardV2 extends HTMLElement {
     if(nextEl&&attrs.next_trigger){
       const d=new Date(attrs.next_trigger),now=new Date(),diff=d-now;
       const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000);
-      const label=diff<0?'overdue':h<24?'in '+(h>0?h+'h ':'')+m+'m':['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+      const timeStr=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+      const todayDate=now.toDateString(), tomorrowDate=new Date(now.getTime()+86400000).toDateString();
+      let label;
+      if(diff<0) label='overdue';
+      else if(h<1) label='in '+m+'m';
+      else if(h<24){
+        if(d.toDateString()===todayDate) label='Tonight '+timeStr;
+        else label='in '+h+'h '+(m>0?m+'m':'');
+      } else if(d.toDateString()===tomorrowDate) label='Tomorrow '+timeStr;
+      else label=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+timeStr;
       nextEl.textContent=isOn?'next: '+label:'disabled';
       nextEl.className='sched-next'+(isOn?' sched-next--on':'');
     }
