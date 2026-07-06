@@ -446,7 +446,9 @@ class SprinklerDashCardV2 extends HTMLElement {
     .lastrun-row:last-child{border-bottom:none}
     .lastrun-zone{color:var(--primary-text-color,#eee)}
     .lastrun-skipped{color:rgba(255,180,60,0.8);font-style:italic}
-    .lastrun-ts{font-size:11px;color:var(--secondary-text-color,#666);margin-bottom:8px}
+    .lastrun-ts{font-size:11px;color:var(--secondary-text-color,#666);margin-bottom:10px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,0.07)}
+    .lastrun-section-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#555);font-weight:700;margin-bottom:4px}
+    .lastrun-dur{color:var(--secondary-text-color,#666);font-size:11px}
     .zprog-track{height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;margin-bottom:4px}
     .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width .9s linear}
     .zstat{font-size:11px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:14px;margin-bottom:5px}
@@ -778,7 +780,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const dr=document.createElement('div'); dr.className='zdur-row';
       const dl=document.createElement('span'); dl.className='zdur-lbl'; dl.textContent='Min';
       const di=document.createElement('input'); di.type='number'; di.className='zdur-input';
-      di.id='zdur-'+i; di.min=0; di.max=60; di.step=5; di.value=10;
+      di.id='zdur-'+i; di.min=0; di.max=60; di.step=1; di.value=10;
       const du=document.createElement('span'); du.className='zdur-unit'; du.textContent='min';
       const db=document.createElement('div'); db.className='zdur-btns';
       const bm=document.createElement('button'); bm.className='zdur-btn'; bm.textContent='-';
@@ -802,8 +804,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       });
       const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); if(this._onTimes[i])this._onTimes[i].totalSecs=val*60; };
       di.addEventListener('change',()=>applyDur(parseFloat(di.value)||0));
-      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-5));
-      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+5));
+      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-1));
+      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+1));
     });
   }
 
@@ -1325,24 +1327,41 @@ class SprinklerDashCardV2 extends HTMLElement {
     const r = this.shadowRoot;
     const body = r.getElementById('lastrun-body');
     const raw = this._hass.states['input_text.sprinkler_last_run']?.state || '';
-    if (!raw || raw === 'unknown') {
+    if (!raw || raw === 'unknown' || raw === '') {
       body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet. Run the schedule to see details here.</p>';
     } else {
       try {
         const data = JSON.parse(raw);
-        const ts = data.ts ? new Date(data.ts).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
-        let html = `<div class="lastrun-ts">Started: ${ts}</div>`;
-        (data.zones||[]).forEach(z => {
-          const skipped = z.skipped;
-          const dur = z.dur ? `${z.dur}m` : '—';
-          html += `<div class="lastrun-row">
-            <span class="${skipped?'lastrun-skipped':'lastrun-zone'}">${z.name}${skipped?' (skipped)':''}</span>
-            <span style="color:var(--secondary-text-color,#666)">${skipped?'—':dur}</span>
-          </div>`;
-        });
+        const ts = data.ts ? new Date(data.ts).toLocaleString([], {weekday:'long',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+        let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
+        const zones = (data.zones || data.z || []).map(z => ({
+          name: z.name || z.n || '?',
+          dur: z.dur ?? z.d ?? null,
+          skipped: z.skipped || z.s === 1,
+        }));
+        const ran = zones.filter(z=>!z.skipped);
+        const skipped = zones.filter(z=>z.skipped);
+        if (ran.length) {
+          html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
+          ran.forEach(z => {
+            html += `<div class="lastrun-row">
+              <span class="lastrun-zone">💧 ${z.name}</span>
+              <span class="lastrun-dur">${z.dur ? z.dur+'m' : '—'}</span>
+            </div>`;
+          });
+        }
+        if (skipped.length) {
+          html += `<div class="lastrun-section-lbl" style="margin-top:10px">Skipped (${skipped.length})</div>`;
+          skipped.forEach(z => {
+            html += `<div class="lastrun-row">
+              <span class="lastrun-skipped">⏭ ${z.name}</span>
+              <span class="lastrun-dur">—</span>
+            </div>`;
+          });
+        }
         body.innerHTML = html;
       } catch(e) {
-        body.textContent = raw;
+        body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Could not read last run data. It may be incomplete — run the schedule again to reset.</p>';
       }
     }
     r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
@@ -1352,12 +1371,13 @@ class SprinklerDashCardV2 extends HTMLElement {
     const e = 'input_text.sprinkler_last_run';
     if (!this._hass.states[e]) return;
     const skipList = this._skipList();
+    // store compact data to fit in 255 char limit — short name truncation
     const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>({
-      name: z.name,
-      dur: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : null,
-      skipped: skipList.includes(z.sw),
+      n: z.name.substring(0,12),
+      d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : null,
+      s: skipList.includes(z.sw) ? 1 : 0,
     }));
-    const data = JSON.stringify({ ts: new Date().toISOString(), zones });
+    const data = JSON.stringify({ ts: new Date().toISOString(), z: zones });
     this._svc('input_text', 'set_value', {entity_id: e, value: data.substring(0, 255)});
   }
 
