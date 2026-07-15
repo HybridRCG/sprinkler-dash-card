@@ -480,8 +480,12 @@ class SprinklerDashCardV2 extends HTMLElement {
     .sched-time-wrap{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
     .sched-time{font-size:20px;font-weight:700;color:var(--primary-text-color,#f0f0f0);cursor:pointer;letter-spacing:.02em;line-height:1;padding:2px 4px;border-radius:5px;border:1px solid transparent;transition:border-color .15s,background .15s;min-width:60px;text-align:right;display:flex;align-items:center;gap:6px}
     .sched-time:hover{border-color:rgba(77,196,154,0.4);background:rgba(26,138,100,0.1)}
-    .sched-time input[type=time]{width:110px;font-size:18px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:4px 6px;outline:none;text-align:center}
-    .sched-time-confirm{background:#1a8a64;border:none;border-radius:5px;color:#fff;font-size:13px;font-weight:700;padding:4px 8px;cursor:pointer;line-height:1}
+    .sched-time-edit{display:flex;align-items:center;gap:4px}
+    .sched-time-part{width:42px;font-size:18px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:4px 2px;outline:none;text-align:center;-moz-appearance:textfield}
+    .sched-time-part::-webkit-inner-spin-button,.sched-time-part::-webkit-outer-spin-button{-webkit-appearance:none}
+    .sched-time-sep{font-size:18px;font-weight:700;color:var(--primary-text-color,#f0f0f0)}
+    .sched-time-confirm{background:#1a8a64;border:none;border-radius:5px;color:#fff;font-size:13px;font-weight:700;padding:5px 9px;cursor:pointer;line-height:1;flex-shrink:0}
+    .sched-time-cancel{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:var(--secondary-text-color,#aaa);font-size:12px;font-weight:600;padding:5px 7px;cursor:pointer;line-height:1;flex-shrink:0}
     .sched-next{font-size:11px;color:var(--secondary-text-color,#666)}
     .sched-next--on{color:#4dc49a}
     /* CONFIG PANEL — no overflow:hidden so dropdowns escape */
@@ -735,25 +739,47 @@ class SprinklerDashCardV2 extends HTMLElement {
     timeEl.addEventListener('click', () => {
       if (this._editingTime) return;
       this._editingTime = true;
-      const cur = timeEl.dataset.rawTime || timeEl.textContent.trim();
+      const cur = timeEl.dataset.rawTime || timeEl.textContent.trim() || '06:00';
+      const [curH, curM] = cur.split(':').map(Number);
+
       timeEl.innerHTML = '';
-      const inp = document.createElement('input'); inp.type='time'; inp.value=cur;
+      const wrap = document.createElement('div'); wrap.className = 'sched-time-edit';
+
+      const hInp = document.createElement('input'); hInp.type='number'; hInp.className='sched-time-part';
+      hInp.min=0; hInp.max=23; hInp.value=String(curH).padStart(2,'0');
+
+      const sep = document.createElement('span'); sep.className='sched-time-sep'; sep.textContent=':';
+
+      const mInp = document.createElement('input'); mInp.type='number'; mInp.className='sched-time-part';
+      mInp.min=0; mInp.max=59; mInp.step=1; mInp.value=String(curM).padStart(2,'0');
+
       const confirmBtn = document.createElement('button'); confirmBtn.className='sched-time-confirm'; confirmBtn.textContent='✓';
+      const cancelBtn = document.createElement('button'); cancelBtn.className='sched-time-cancel'; cancelBtn.textContent='✕';
+
       const doSave = () => {
         this._editingTime = false;
-        const val = inp.value;
-        timeEl.innerHTML = '';
-        timeEl.textContent = val ? val.substring(0,5) : cur;
-        timeEl.dataset.rawTime = val || cur;
-        if (val && val !== cur) this._saveTime(val);
+        const h = Math.min(23, Math.max(0, parseInt(hInp.value)||0));
+        const m = Math.min(59, Math.max(0, parseInt(mInp.value)||0));
+        const val = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+        timeEl.innerHTML = ''; timeEl.textContent = val;
+        timeEl.dataset.rawTime = val;
+        if (val !== cur) this._saveTime(val);
       };
+      const doCancel = () => {
+        this._editingTime = false;
+        timeEl.innerHTML = ''; timeEl.textContent = cur;
+      };
+
       confirmBtn.addEventListener('click', (e) => { e.stopPropagation(); doSave(); });
-      // Escape key cancels
-      inp.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') doSave();
-        if (e.key === 'Escape') { this._editingTime=false; timeEl.innerHTML=''; timeEl.textContent=cur; }
-      });
-      timeEl.appendChild(inp); timeEl.appendChild(confirmBtn); inp.focus();
+      cancelBtn.addEventListener('click', (e) => { e.stopPropagation(); doCancel(); });
+
+      // clamp values on manual type
+      hInp.addEventListener('input', () => { if(parseInt(hInp.value)>23) hInp.value='23'; });
+      mInp.addEventListener('input', () => { if(parseInt(mInp.value)>59) mInp.value='59'; });
+
+      wrap.append(hInp, sep, mInp, confirmBtn, cancelBtn);
+      timeEl.appendChild(wrap);
+      hInp.focus(); hInp.select();
     });
     r.getElementById('readme-close').addEventListener('click', () => {
       r.getElementById('readme-modal').classList.remove('readme-modal--open');
