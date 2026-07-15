@@ -478,9 +478,10 @@ class SprinklerDashCardV2 extends HTMLElement {
     .sday{width:26px;height:26px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;cursor:pointer;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.04);color:var(--secondary-text-color,#666);transition:all .15s;flex-shrink:0;user-select:none}
     .sday--on{background:rgba(26,138,100,0.35);border-color:rgba(77,196,154,0.5);color:#4dc49a}
     .sched-time-wrap{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
-    .sched-time{font-size:20px;font-weight:700;color:var(--primary-text-color,#f0f0f0);cursor:pointer;letter-spacing:.02em;line-height:1;padding:2px 4px;border-radius:5px;border:1px solid transparent;transition:border-color .15s,background .15s;min-width:60px;text-align:right}
+    .sched-time{font-size:20px;font-weight:700;color:var(--primary-text-color,#f0f0f0);cursor:pointer;letter-spacing:.02em;line-height:1;padding:2px 4px;border-radius:5px;border:1px solid transparent;transition:border-color .15s,background .15s;min-width:60px;text-align:right;display:flex;align-items:center;gap:6px}
     .sched-time:hover{border-color:rgba(77,196,154,0.4);background:rgba(26,138,100,0.1)}
-    .sched-time input[type=time]{width:74px;font-size:15px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:2px 4px;outline:none;text-align:center}
+    .sched-time input[type=time]{width:110px;font-size:18px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:4px 6px;outline:none;text-align:center}
+    .sched-time-confirm{background:#1a8a64;border:none;border-radius:5px;color:#fff;font-size:13px;font-weight:700;padding:4px 8px;cursor:pointer;line-height:1}
     .sched-next{font-size:11px;color:var(--secondary-text-color,#666)}
     .sched-next--on{color:#4dc49a}
     /* CONFIG PANEL — no overflow:hidden so dropdowns escape */
@@ -732,12 +733,27 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
     const timeEl = r.getElementById('sched-time');
     timeEl.addEventListener('click', () => {
-      if (this._editingTime) return; this._editingTime=true;
-      const cur = timeEl.textContent.trim();
+      if (this._editingTime) return;
+      this._editingTime = true;
+      const cur = timeEl.dataset.rawTime || timeEl.textContent.trim();
+      timeEl.innerHTML = '';
       const inp = document.createElement('input'); inp.type='time'; inp.value=cur;
-      timeEl.innerHTML=''; timeEl.appendChild(inp); inp.focus();
-      const save = () => { this._editingTime=false; const val=inp.value; timeEl.textContent=val||cur; if (val&&val!==cur) this._saveTime(val); };
-      inp.addEventListener('blur', save); inp.addEventListener('change', save);
+      const confirmBtn = document.createElement('button'); confirmBtn.className='sched-time-confirm'; confirmBtn.textContent='✓';
+      const doSave = () => {
+        this._editingTime = false;
+        const val = inp.value;
+        timeEl.innerHTML = '';
+        timeEl.textContent = val ? val.substring(0,5) : cur;
+        timeEl.dataset.rawTime = val || cur;
+        if (val && val !== cur) this._saveTime(val);
+      };
+      confirmBtn.addEventListener('click', (e) => { e.stopPropagation(); doSave(); });
+      // Escape key cancels
+      inp.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') doSave();
+        if (e.key === 'Escape') { this._editingTime=false; timeEl.innerHTML=''; timeEl.textContent=cur; }
+      });
+      timeEl.appendChild(inp); timeEl.appendChild(confirmBtn); inp.focus();
     });
     r.getElementById('readme-close').addEventListener('click', () => {
       r.getElementById('readme-modal').classList.remove('readme-modal--open');
