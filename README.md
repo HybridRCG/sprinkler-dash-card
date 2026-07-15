@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your duration helpers, and everything else is configured and auto-created from the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.4.2-green)
+![Version](https://img.shields.io/badge/version-v2.5.5-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 
@@ -212,6 +212,12 @@ All settings are saved directly into the HA dashboard config via websocket — t
 
 | Version | Changes |
 |---|---|
+| v2.5.5 | Mobile time edit fix — replaced native time picker with HH/MM number inputs; green ✓ to confirm, grey ✕ to cancel |
+| v2.5.4 | Schedule time edit now requires ✓ confirm (no accidental saves); time input widened so minutes are visible |
+| v2.5.3 | Restored 1-min duration steps; Last Run popup properly formatted with Watered/Skipped sections |
+| v2.5.2 | Smarter next-run countdown — shows Tonight/Tomorrow labels instead of just day name |
+| v2.5.1 | Last Run button matches Start Schedule style; compact popup header with inline Close button |
+| v2.5.0 | Stop Schedule button (replaces All Off); Last Run popup with per-zone details; zone last-run badges; rain auto-restore after 48h |
 | v2.4.2 | Duration +/- buttons now increment by 1 minute instead of 5 for fine-grained control |
 | v2.4.1 | Fixed schedule time editing — `stop: null` was crashing the Scheduler integration's time validator, causing a 500 error on save |
 | v2.4.0 | Per-zone "skip next run" — one-tap, self-clearing skip for the next scheduled run; auto-creates `input_text.sprinkler_skip_zones` helper |
