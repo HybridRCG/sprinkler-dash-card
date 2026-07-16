@@ -61,7 +61,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._pendingEdits = {};
     this._saveDebounce = null;
     this._rainDisabledAt = null; // key: 'zone-N-name' etc, value: current typed value
-    this._manualTimers = {};
   }
 
   setConfig(config) {
@@ -233,45 +232,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
   }
 
-  // confirm with a duration spinner — returns promise resolving {dur: N} or null
-  _confirmWithTimer(title, msg, defaultDur=10) {
-    if (!this._cfg.confirm_actions) return Promise.resolve({dur: defaultDur});
-    const r = this.shadowRoot;
-    r.getElementById('confirm-title').textContent = title;
-
-    // build custom body with duration field
-    const msgEl = r.getElementById('confirm-msg');
-    msgEl.innerHTML = '';
-    const row = document.createElement('div'); row.style.cssText='display:flex;align-items:center;justify-content:center;gap:8px;margin:4px 0 0';
-    const lbl = document.createElement('span'); lbl.style.cssText='font-size:13px;color:var(--secondary-text-color,#aaa)'; lbl.textContent=msg;
-    const durInp = document.createElement('input'); durInp.type='number';
-    durInp.style.cssText='width:52px;padding:5px 6px;border-radius:6px;border:1px solid #1a8a64;background:rgba(26,138,100,0.15);color:var(--primary-text-color,#eee);font-size:15px;font-weight:700;text-align:center;outline:none';
-    durInp.min=1; durInp.max=120; durInp.value=defaultDur;
-    const unit = document.createElement('span'); unit.style.cssText='font-size:13px;color:var(--secondary-text-color,#aaa)'; unit.textContent='min';
-    row.append(lbl, durInp, unit); msgEl.appendChild(row);
-
-    const okBtn = r.getElementById('confirm-ok');
-    okBtn.className = 'confirm-btn confirm-btn--ok';
-    okBtn.textContent = '▶ Turn On';
-    r.getElementById('confirm-modal').classList.add('confirm-modal--open');
-
-    return new Promise(resolve => {
-      this._confirmResolve = resolve;
-      const onOk = () => {
-        r.getElementById('confirm-modal').classList.remove('confirm-modal--open');
-        okBtn.removeEventListener('click', onOk);
-        okBtn.textContent = 'Confirm';
-        msgEl.innerHTML = '';
-        resolve({ dur: Math.min(120, Math.max(1, parseInt(durInp.value)||defaultDur)) });
-      };
-      okBtn.addEventListener('click', onOk);
-      // cancel button resets
-      r.getElementById('confirm-cancel').addEventListener('click', () => {
-        okBtn.textContent = 'Confirm'; msgEl.innerHTML = '';
-      }, {once: true});
-    });
-  }
-
   _allOff() {
     this._confirm('All Off', 'Turn off all zones immediately?', 'confirm-btn--danger').then(ok => {
       if (!ok) return;
@@ -377,7 +337,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       await this._hass.connection.sendMessagePromise({
         type: 'input_text/create',
         name: 'Sprinkler Last Run',
-        max: 255, min: 0, mode: 'text', initial: '',
+        max: 1024, min: 0, mode: 'text', initial: '',
         icon: 'mdi:history',
       });
       console.log('[SprinklerCard] created input_text.sprinkler_last_run');
@@ -455,10 +415,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zone--on{background:rgba(26,138,100,0.1);border-color:rgba(77,196,154,0.35)}
     .zone--on::before{background:linear-gradient(90deg,#1a8a64,#4dc49a)}
     .ztop{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-    .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s,border-color .2s}
+    .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s}
     .zseq--on{background:rgba(26,138,100,0.4);color:#4dc49a;border-color:rgba(77,196,154,0.4)}
-    .zseq--done{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.3);border-color:rgba(255,255,255,0.1)}
-    .zseq--queued{background:rgba(255,180,60,0.1);color:rgba(255,180,60,0.6);border-color:rgba(255,180,60,0.2)}
     .zname{flex:1;font-size:13px;font-weight:700;color:var(--primary-text-color,#f0f0f0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .zone--on .zname{color:#7de8c0}
     .zone--disabled .zname{color:var(--secondary-text-color,#555);text-decoration:line-through}
@@ -837,27 +795,12 @@ class SprinklerDashCardV2 extends HTMLElement {
       tog.addEventListener('click',()=>{
         if (!z.sw) return;
         const isOn = this._hass.states[z.sw]?.state==='on';
-        if (isOn) {
-          // turning off — cancel any manual timer
-          if (this._manualTimers?.[i]) { clearTimeout(this._manualTimers[i]); delete this._manualTimers[i]; }
-          this._confirm(z.name, `Turn off ${z.name}?`, 'confirm-btn--danger').then(ok => {
-            if (ok) this._svc('switch', 'turn_off', {entity_id:z.sw});
-          });
-        } else {
-          // turning on — show timer confirm with duration field
-          const defaultDur = z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||10)) : 10;
-          this._confirmWithTimer(z.name, `Turn on ${z.name} for:`, defaultDur).then(result => {
-            if (!result) return;
-            this._svc('switch', 'turn_on', {entity_id:z.sw});
-            if (!this._manualTimers) this._manualTimers = {};
-            if (result.dur > 0) {
-              this._manualTimers[i] = setTimeout(() => {
-                this._svc('switch', 'turn_off', {entity_id:z.sw});
-                delete this._manualTimers[i];
-              }, result.dur * 60 * 1000);
-            }
-          });
-        }
+        const action = isOn ? 'turn_off' : 'turn_on';
+        const msg = isOn ? `Turn off ${z.name}?` : `Turn on ${z.name}?`;
+        const okClass = isOn ? 'confirm-btn--danger' : 'confirm-btn--ok';
+        this._confirm(z.name, msg, okClass).then(ok => {
+          if (ok) this._svc('switch', action, {entity_id:z.sw});
+        });
       });
       const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); if(this._onTimes[i])this._onTimes[i].totalSecs=val*60; };
       di.addEventListener('change',()=>applyDur(parseFloat(di.value)||0));
@@ -1376,8 +1319,6 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._svc('script', 'turn_off', {entity_id: 'script.sprinkler'});
       const allSwitches = this._activeZones().map(z=>z.sw).filter(Boolean);
       if (allSwitches.length) this._svc('switch', 'turn_off', {entity_id: allSwitches});
-      // cancel any pending manual timers
-      Object.keys(this._manualTimers).forEach(k=>{ clearTimeout(this._manualTimers[k]); delete this._manualTimers[k]; });
       this._activeZones().forEach((_,i)=>{ delete this._onTimes[i]; this._renderProgress(i,false,0,0,false); });
     });
   }
@@ -1430,14 +1371,14 @@ class SprinklerDashCardV2 extends HTMLElement {
     const e = 'input_text.sprinkler_last_run';
     if (!this._hass.states[e]) return;
     const skipList = this._skipList();
-    // store compact data to fit in 255 char limit — short name truncation
     const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>({
-      n: z.name.substring(0,12),
-      d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : null,
+      n: z.name,
+      d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : 0,
       s: skipList.includes(z.sw) ? 1 : 0,
     }));
-    const data = JSON.stringify({ ts: new Date().toISOString(), z: zones });
-    this._svc('input_text', 'set_value', {entity_id: e, value: data.substring(0, 255)});
+    const ts = new Date().toISOString().substring(0,16);
+    const final = JSON.stringify({ ts, z: zones });
+    this._svc('input_text', 'set_value', {entity_id: e, value: final.substring(0, 1024)});
   }
 
   _toggleDay(day) {
@@ -1570,31 +1511,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       this.shadowRoot.getElementById('zskip-'+i)?.classList.toggle('zskip--active', skipped);
       const skipEl = this.shadowRoot.getElementById('zskip-'+i);
       if (skipEl) skipEl.title = skipped ? 'Skipped — tap to cancel' : 'Skip next scheduled run';
-
-      // sequence badge — colour based on run order during active schedule
-      const seqEl = this.shadowRoot.getElementById('zseq-'+i);
-      if (seqEl) {
-        const scriptRunning = this._hass.states['script.sprinkler']?.state === 'on';
-        seqEl.classList.remove('zseq--on','zseq--done','zseq--queued');
-        if (!scriptRunning) seqEl.textContent = i+1; // restore number when script stops
-        if (isOn) {
-          seqEl.classList.add('zseq--on'); seqEl.textContent = i+1;
-        } else if (scriptRunning && z.schedule_enabled !== false) {
-          // find current running zone index in schedule sequence
-          const schedZones = this._activeZones().filter(zz=>zz.sw&&zz.schedule_enabled!==false);
-          const currentRunningIdx = schedZones.findIndex(zz=>zz.sw&&this._hass.states[zz.sw]?.state==='on');
-          const mySchedIdx = schedZones.findIndex(zz=>zz.sw===z.sw);
-          if (currentRunningIdx >= 0 && mySchedIdx >= 0) {
-            if (mySchedIdx < currentRunningIdx) { seqEl.classList.add('zseq--done'); seqEl.textContent='✓'; }
-            else if (mySchedIdx > currentRunningIdx) seqEl.classList.add('zseq--queued');
-          } else if (currentRunningIdx < 0) {
-            // script running but between zones (delay) — all non-on zones are either done or queued
-            // use last_changed to determine which have run
-            seqEl.classList.add('zseq--queued');
-          }
-        }
-      }
-
+      this.shadowRoot.getElementById('zseq-'+i)?.classList.toggle('zseq--on',isOn);
       this.shadowRoot.getElementById('ztog-'+i)?.classList.toggle('ztoggle--on',isOn);
       const inp=this.shadowRoot.getElementById('zdur-'+i);
       if(inp&&inp!==this.shadowRoot.activeElement){inp.min=durMin;inp.max=durMax;inp.value=durVal;}
