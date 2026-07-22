@@ -337,7 +337,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       await this._hass.connection.sendMessagePromise({
         type: 'input_text/create',
         name: 'Sprinkler Last Run',
-        max: 1024, min: 0, mode: 'text', initial: '',
+        max: 255, min: 0, mode: 'text', initial: '',
         icon: 'mdi:history',
       });
       console.log('[SprinklerCard] created input_text.sprinkler_last_run');
@@ -780,7 +780,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const dr=document.createElement('div'); dr.className='zdur-row';
       const dl=document.createElement('span'); dl.className='zdur-lbl'; dl.textContent='Min';
       const di=document.createElement('input'); di.type='number'; di.className='zdur-input';
-      di.id='zdur-'+i; di.min=0; di.max=60; di.step=1; di.value=10;
+      di.id='zdur-'+i; di.min=0; di.max=60; di.step=5; di.value=10;
       const du=document.createElement('span'); du.className='zdur-unit'; du.textContent='min';
       const db=document.createElement('div'); db.className='zdur-btns';
       const bm=document.createElement('button'); bm.className='zdur-btn'; bm.textContent='-';
@@ -804,8 +804,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       });
       const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); if(this._onTimes[i])this._onTimes[i].totalSecs=val*60; };
       di.addEventListener('change',()=>applyDur(parseFloat(di.value)||0));
-      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-1));
-      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+1));
+      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-5));
+      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+5));
     });
   }
 
@@ -1371,14 +1371,14 @@ class SprinklerDashCardV2 extends HTMLElement {
     const e = 'input_text.sprinkler_last_run';
     if (!this._hass.states[e]) return;
     const skipList = this._skipList();
+    // store compact data to fit in 255 char limit — short name truncation
     const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>({
-      n: z.name,
-      d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : 0,
+      n: z.name.substring(0,12),
+      d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : null,
       s: skipList.includes(z.sw) ? 1 : 0,
     }));
-    const ts = new Date().toISOString().substring(0,16);
-    const final = JSON.stringify({ ts, z: zones });
-    this._svc('input_text', 'set_value', {entity_id: e, value: final.substring(0, 1024)});
+    const data = JSON.stringify({ ts: new Date().toISOString(), z: zones });
+    this._svc('input_text', 'set_value', {entity_id: e, value: data.substring(0, 255)});
   }
 
   _toggleDay(day) {
