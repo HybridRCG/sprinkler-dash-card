@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your duration helpers, and everything else is configured and auto-created from the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.7.4-green)
+![Version](https://img.shields.io/badge/version-v2.7.5-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 
@@ -212,6 +212,7 @@ All settings are saved directly into the HA dashboard config via websocket — t
 
 | Version | Changes |
 |---|---|
+| v2.7.5 | Version number in sticky header; settings sections all visible; push.sh updated |
 | v2.7.4 | Version number visible in settings sticky header; push.sh now picks up from Downloads |
 | v2.7.3 | Version number in settings made more visible |
 | v2.7.2 | Fixed helper auto-creation API; Last Run fits 255 chars; zone run order indicator fixed; version in settings |

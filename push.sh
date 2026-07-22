@@ -12,17 +12,21 @@ VERSION="$2"
 
 cd "$(dirname "$0")"
 
-# Copy latest card — prefer Claude output in Downloads, fall back to HA Samba mount
-CLAUDE_SRC="$HOME/Downloads/sprinkler-dash-card.js"
-HA_SRC="/Volumes/config/www/sprinkler-dash-card.js"
-if [ -f "$CLAUDE_SRC" ]; then
-  cp "$CLAUDE_SRC" sprinkler-dash-card.js
-  echo "✓ Copied from $CLAUDE_SRC"
+# Copy latest card — from Claude outputs dir (set by Claude Desktop)
+CLAUDE_OUT="$HOME/Library/Application Support/Claude/outputs/sprinkler-dash-card.js"
+CLAUDE_DL="$HOME/Downloads/sprinkler-dash-card.js"
+HA_SRC="/Volumes/config/www/community/sprinkler-dash-card/sprinkler-dash-card.js"
+if [ -f "$CLAUDE_OUT" ]; then
+  cp "$CLAUDE_OUT" sprinkler-dash-card.js
+  echo "✓ Copied from Claude outputs"
+elif [ -f "$CLAUDE_DL" ]; then
+  cp "$CLAUDE_DL" sprinkler-dash-card.js
+  echo "✓ Copied from Downloads"
 elif [ -f "$HA_SRC" ]; then
   cp "$HA_SRC" sprinkler-dash-card.js
-  echo "✓ Copied from $HA_SRC"
+  echo "✓ Copied from HACS HA folder"
 else
-  echo "⚠ No source file found — using existing sprinkler-dash-card.js"
+  echo "⚠ No source file found — using existing sprinkler-dash-card.js in project"
 fi
 
 git add -A
