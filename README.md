@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your duration helpers, and everything else is configured and auto-created from the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.6.0-green)
+![Version](https://img.shields.io/badge/version-v2.7.2-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 
@@ -212,6 +212,9 @@ All settings are saved directly into the HA dashboard config via websocket — t
 
 | Version | Changes |
 |---|---|
+| v2.7.2 | Fixed helper auto-creation API; Last Run fits 255 chars; zone run order indicator fixed; version in settings |
+| v2.7.1 | Zone run order indicator fixed; Last Run data fits within 255 char HA limit; version number in settings footer |
+| v2.7.0 | Zone run order indicator (green=current, ✓=done, amber=queued); manual zone timer with auto-stop |
 | v2.6.0 | Zone run order indicator — sequence badges colour green (current), ✓ grey (done), amber (queued) during active schedule; manual zone timer — tap zone toggle to start with auto-stop after configurable minutes |
 | v2.5.5 | Mobile time edit fix — replaced native time picker with HH/MM number inputs; green ✓ to confirm, grey ✕ to cancel |
 | v2.5.4 | Schedule time edit now requires ✓ confirm (no accidental saves); time input widened so minutes are visible |
