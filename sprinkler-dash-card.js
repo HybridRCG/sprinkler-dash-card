@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.8.2';
+const CARD_VERSION = '2.8.3';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -310,7 +310,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       (s.attributes.entities||[]).includes('script.sprinkler')
     );
     const needsSkipHelper = !this._hass.states['input_text.sprinkler_skip_zones'];
-    const needsLastRunHelper = !this._hass.states['input_text.sprinkler_last_run'];
+    const needsLogHelpers = !this._hass.states['input_text.sprinkler_run_log_0'];
 
     const afterHelper = (helperJustCreated) => {
       if (needsScript || helperJustCreated) {
@@ -322,28 +322,40 @@ class SprinklerDashCardV2 extends HTMLElement {
       }
     };
 
-    if (needsSkipHelper || needsLastRunHelper) {
+    if (needsSkipHelper || needsLogHelpers) {
       const creates = [];
       if (needsSkipHelper) creates.push(this._createSkipHelper());
-      if (needsLastRunHelper) creates.push(this._createLastRunHelper());
+      if (needsLogHelpers) creates.push(this._createLogHelpers());
       Promise.all(creates).then(() => setTimeout(()=>afterHelper(needsSkipHelper), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
     } else {
       afterHelper(false);
     }
   }
 
-  async _createLastRunHelper() {
-    try {
-      await this._hass.connection.sendMessagePromise({
-        type: 'input_text/create',
-        name: 'Sprinkler Last Run',
-        max: 255, min: 0, mode: 'text', initial: '',
-        icon: 'mdi:history',
-      });
-      console.log('[SprinklerCard] created input_text.sprinkler_last_run');
-    } catch(e) {
-      console.warn('[SprinklerCard] could not auto-create last run helper', e);
+  async _createLogHelpers() {
+    // create 3 ring-buffer input_text helpers for run history
+    for (let i = 0; i < 3; i++) {
+      try {
+        await this._hass.callApi('POST', 'config/helpers/input_text', {
+          name: 'Sprinkler Run Log ' + i,
+          max: 255, min: 0, mode: 'text',
+          icon: 'mdi:history',
+        });
+      } catch(e) {
+        // fallback to websocket
+        try {
+          await this._hass.connection.sendMessagePromise({
+            type: 'input_text/create',
+            name: 'Sprinkler Run Log ' + i,
+            max: 255, min: 0, mode: 'text', initial: '[]',
+            icon: 'mdi:history',
+          });
+        } catch(e2) {
+          console.warn('[SprinklerCard] could not create log helper ' + i, e2);
+        }
+      }
     }
+    console.log('[SprinklerCard] created sprinkler run log helpers');
   }
 
   async _createSkipHelper() {
@@ -1351,68 +1363,84 @@ class SprinklerDashCardV2 extends HTMLElement {
     const r = this.shadowRoot;
     const body = r.getElementById('lastrun-body');
     r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
-    body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Loading...</p>';
-    // Fetch log file written by Node-RED
-    const token = this._hass.auth?.data?.access_token || this._hass.connection?.options?.auth?.data?.access_token || '';
-    fetch('/api/config', {headers:{Authorization:'Bearer '+token}})
-      .then(() => fetch('/local/sprinkler_log.json?t='+Date.now()))
-      .then(res => res.ok ? res.text() : Promise.reject('not found'))
-      .then(text => {
-        const lines = text.trim().split('\n').filter(Boolean).reverse();
-        if (!lines.length) throw new Error('empty');
-        this._renderLastRunEntries(body, lines.slice(0, 30));
-      }).catch(() => {
-        // fallback to input_text
-        const raw = this._hass.states['input_text.sprinkler_last_run']?.state || '';
-        if (!raw || raw === 'unknown' || raw === '') {
-          body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet.</p>';
-        } else {
-          try { this._renderLastRunEntries(body, [raw]); }
-          catch(e) { body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Could not read last run data.</p>'; }
-        }
-      });
-  }
-
-  _renderLastRunEntries(body, lines) {
-    let html = '';
-    lines.forEach((line, idx) => {
+    // collect all run entries from 3 ring-buffer helpers
+    const helpers = [
+      'input_text.sprinkler_run_log_0',
+      'input_text.sprinkler_run_log_1',
+      'input_text.sprinkler_run_log_2',
+    ];
+    const allEntries = [];
+    helpers.forEach(e => {
+      const raw = this._hass.states[e]?.state || '';
+      if (!raw || raw === 'unknown') return;
+      // each helper stores up to 4 runs as JSON array
       try {
-        const data = JSON.parse(line);
-        const tsStr = data.t || data.ts || '';
-        const ts = tsStr ? new Date(tsStr).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
-        const zones = (data.z || data.zones || []).map(z=>({
-          name: z.n || z.name || '?', dur: z.d ?? z.dur ?? null, skipped: z.s===1 || z.skipped===true,
-        }));
-        const ran = zones.filter(z=>!z.skipped);
-        const skipped = zones.filter(z=>z.skipped);
-        if (idx > 0) html += '<div style="border-top:1px solid rgba(255,255,255,0.07);margin:8px 0"></div>';
-        html += `<div class="lastrun-ts">📅 ${ts}</div>`;
-        if (ran.length) {
-          html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
-          ran.forEach(z => { html += `<div class="lastrun-row"><span class="lastrun-zone">💧 ${z.name}</span><span class="lastrun-dur">${z.dur?z.dur+'m':'—'}</span></div>`; });
-        }
-        if (skipped.length) {
-          html += `<div class="lastrun-section-lbl" style="margin-top:6px">Skipped (${skipped.length})</div>`;
-          skipped.forEach(z => { html += `<div class="lastrun-row"><span class="lastrun-skipped">⏭ ${z.name}</span><span class="lastrun-dur">—</span></div>`; });
-        }
-      } catch(e) {}
+        const arr = JSON.parse(raw);
+        if (Array.isArray(arr)) arr.forEach(entry => allEntries.push(entry));
+      } catch(err) {}
+    });
+    if (!allEntries.length) {
+      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet. Run the schedule to see details here.</p>';
+      return;
+    }
+    // sort newest first by timestamp
+    allEntries.sort((a,b) => (b.t||'').localeCompare(a.t||''));
+    let html = '';
+    allEntries.slice(0,12).forEach((data, idx) => {
+      const tsStr = data.t || '';
+      const ts = tsStr ? new Date(tsStr).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+      const zoneNames = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>z.name);
+      const durs = data.d || [];
+      const skips = data.s || [];
+      if (idx > 0) html += '<div style="border-top:1px solid rgba(255,255,255,0.07);margin:8px 0"></div>';
+      html += `<div class="lastrun-ts">📅 ${ts}</div>`;
+      const ran = [], skipped = [];
+      durs.forEach((d,i) => {
+        const name = zoneNames[i] || ('Zone '+(i+1));
+        if (skips.includes(i)) skipped.push({name,d});
+        else ran.push({name,d});
+      });
+      if (ran.length) {
+        html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
+        ran.forEach(z => { html += `<div class="lastrun-row"><span class="lastrun-zone">💧 ${z.name}</span><span class="lastrun-dur">${z.d?z.d+'m':'—'}</span></div>`; });
+      }
+      if (skipped.length) {
+        html += `<div class="lastrun-section-lbl" style="margin-top:6px">Skipped (${skipped.length})</div>`;
+        skipped.forEach(z => { html += `<div class="lastrun-row"><span class="lastrun-skipped">⏭ ${z.name}</span><span class="lastrun-dur">—</span></div>`; });
+      }
     });
     body.innerHTML = html || '<p style="color:var(--secondary-text-color,#666)">No run data found.</p>';
   }
 
   _recordLastRun() {
-    const e = 'input_text.sprinkler_last_run';
-    if (!this._hass.states[e]) return;
+    // Ring buffer: 3 helpers x 4 entries = 12 runs of history
+    const helpers = [
+      'input_text.sprinkler_run_log_0',
+      'input_text.sprinkler_run_log_1',
+      'input_text.sprinkler_run_log_2',
+    ];
+    // Check all helpers are ready
+    if (!helpers.every(e => this._hass.states[e])) return;
     const skipList = this._skipList();
-    const now = new Date();
-    const t = now.toISOString().substring(0,16); // 2026-07-23T08:00
-    const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>({
-      n: z.name.substring(0,7),
-      d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : 0,
-      s: skipList.includes(z.sw) ? 1 : 0,
-    }));
-    const data = JSON.stringify({t, z: zones}, null, 0);
-    this._svc('input_text', 'set_value', {entity_id: e, value: data.substring(0, 255)});
+    const t = new Date().toISOString().substring(0,16);
+    const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false);
+    const d = zones.map(z => z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : 0);
+    const s = zones.map((z,i)=>i).filter(i=>skipList.includes(zones[i].sw));
+    const entry = {t, d, s};
+    // collect all current entries
+    let all = [];
+    helpers.forEach(e => {
+      try { const arr = JSON.parse(this._hass.states[e]?.state||'[]'); if(Array.isArray(arr)) all.push(...arr); } catch(err) {}
+    });
+    // prepend new entry, keep newest 12
+    all.unshift(entry);
+    all = all.slice(0,12);
+    // distribute 4 per helper
+    helpers.forEach((e, hi) => {
+      const chunk = all.slice(hi*4, hi*4+4);
+      const val = JSON.stringify(chunk);
+      if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
+    });
   }
 
   _toggleDay(day) {
