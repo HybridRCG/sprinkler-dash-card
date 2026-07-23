@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.7.9';
+const CARD_VERSION = '2.8.0';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -638,12 +638,11 @@ class SprinklerDashCardV2 extends HTMLElement {
           </div>
         </div>
         <div class="readme-body">
-        <h4>Step 1 — Install the card</h4>
+        <h4>Step 1 — Install via HACS</h4>
+        <p>Search for <b>Sprinkler Dash Card</b> in HACS → Frontend. Install and hard-refresh. Then add the card:</p>
         <ul>
-          <li>Copy <code>sprinkler-dash-card.js</code> to <code>/config/www/</code></li>
-          <li>Go to <b>Settings → Dashboards → Resources</b></li>
-          <li>Add <code>/local/sprinkler-dash-card.js</code> as type <b>JavaScript Module</b></li>
-          <li>Add the card: <code>type: custom:sprinkler-dash-card-v2</code></li>
+          <li>YAML: <code>type: custom:sprinkler-dash-card-v2</code></li>
+          <li>Or use the card picker to find <b>Sprinkler Dash Card</b></li>
         </ul>
 
         <h4>Step 2 — Create duration helpers</h4>
@@ -651,37 +650,56 @@ class SprinklerDashCardV2 extends HTMLElement {
         <ul>
           <li><code>input_number.valve_1_time</code> through <code>input_number.valve_8_time</code></li>
           <li>Settings: min 0, max 60, step 1, unit <b>min</b></li>
-          <li>Add up to <code>valve_10_time</code> if using more than 8 zones</li>
+          <li>Create up to <code>valve_12_time</code> if using up to 12 zones</li>
         </ul>
 
         <h4>Step 3 — Install Scheduler integration</h4>
-        <p>Install <b>Scheduler Component</b> via HACS (Integration category). That's all — the card automatically creates both <code>script.sprinkler</code> and the scheduler entity on first load. The scheduler defaults to Mon/Wed/Fri at 06:00 — adjust the days and time using the Schedule section on the card.</p>
+        <p>Install <b>Scheduler Component</b> via HACS (Integration category). The card auto-creates <code>script.sprinkler</code> and the Scheduler entity on first load — defaults to Mon/Wed/Fri at 06:00. Adjust in the Schedule section on the card.</p>
 
         <h4>Step 4 — Configure zones in ⚙️</h4>
-        <p>Tap the gear icon → <b>Active Zones</b> to set how many zones to show. For each zone set the <b>Switch Entity</b> (your valve switch) and <b>Duration Entity</b> (the input_number from Step 2). Use the search field to find entities. Drag <b>⠿</b> to reorder. Tick the checkbox to include a zone in the schedule.</p>
+        <p>Open settings (⚙️). Set <b>Active Zones</b> (1–12). For each zone set the <b>Switch Entity</b> (valve switch) and <b>Duration Entity</b> (<code>input_number</code> from Step 2). Drag <b>⠿</b> to reorder. Tick the checkbox to include a zone in scheduled runs. Tap 💾 Save when done.</p>
 
         <h4>Step 5 — Configure settings in ⚙️</h4>
         <ul>
           <li><b>Nav path</b>: where tapping the title navigates (e.g. <code>/lovelace</code>)</li>
           <li><b>Rain sensor</b>: precipitation sensor in mm</li>
-          <li><b>Rain limit</b>: mm above which schedule auto-disables (turns yellow)</li>
+          <li><b>Rain limit</b>: mm above which schedule auto-disables (slot turns yellow)</li>
+          <li><b>Rain restore</b>: hours after which schedule re-enables when rain clears (default 48h)</li>
           <li><b>Weather</b>: any <code>weather.*</code> entity</li>
-          <li><b>Jojo sensor</b>: water tank litres entity</li>
-          <li><b>Jojo low %</b>: tank level below which all zones shut off immediately (turns red)</li>
+          <li><b>Jojo sensor</b>: water tank litres sensor</li>
+          <li><b>Jojo low %</b>: tank % below which all zones shut off (slot turns red)</li>
           <li><b>Schedule switch</b>: the <code>switch.schedule_*</code> entity from Scheduler</li>
         </ul>
 
         <h4>Step 6 — Configure info bar in ⚙️</h4>
-        <p>4 slots are available. Each slot has an enable checkbox, label, MDI icon (searchable), and up to 2 sensors. Tap any info bar item to open the entity detail. Layout auto-adjusts: 1=full, 2=50/50, 3=3-col, 4=2×2.</p>
+        <p>4 slots in the header. Each slot has an enable checkbox, label, MDI icon (searchable with live preview), and up to 2 sensors. Tap any slot to open the entity detail. Layout auto-adjusts: 1=full, 2=50/50, 3=3-col, 4=2×2. Tap 💾 Save when done.</p>
 
         <h4>Step 7 — Automation rules in ⚙️</h4>
-        <p>Enable or disable the built-in rules at the bottom of settings: <b>Confirm before activating</b>, <b>Rain auto-disable</b>, and <b>Jojo low-level shutoff</b>. Each rule shows its current threshold.</p>
+        <p>At the bottom of settings, enable or disable rules:</p>
+        <ul>
+          <li><b>Confirm before activating</b>: confirmation popup on all zone/schedule actions</li>
+          <li><b>Rain: Auto-disable schedule</b>: turns off schedule when rain exceeds limit</li>
+          <li><b>Rain: Auto-restore schedule</b>: re-enables schedule after rain clears (48h default)</li>
+          <li><b>Jojo: Low-level zone shutoff</b>: closes all valves when tank drops below low %</li>
+        </ul>
 
-        <h4>Skip next run (per zone)</h4>
-        <p>Tap the <b>calendar-remove</b> icon next to any zone name to mark it as skipped for the next run only. The zone gets an amber dashed border and shows "Skip next run". No confirmation needed — tap again to cancel. When the schedule (or Start Schedule) next runs, that zone is bypassed and the skip automatically clears itself — no setup required, the card creates a small helper for this on first load.</p>
+        <h4>Buttons</h4>
+        <ul>
+          <li><b>Start Schedule</b>: manually runs all schedule-enabled zones in sequence</li>
+          <li><b>Stop Schedule</b>: appears while running — stops the script and closes all valves</li>
+          <li><b>Last Run</b>: shows a popup with the previous run's timestamp, zones watered, durations, and any skipped zones</li>
+        </ul>
+
+        <h4>Zone features</h4>
+        <ul>
+          <li><b>Toggle</b>: manually turn a zone on — shows a duration picker so it auto-stops after the set time</li>
+          <li><b>Skip next run</b>: tap the 📅 calendar icon on a zone to skip it from the next scheduled run only — self-clearing after the run</li>
+          <li><b>Last run badge</b>: shows "last: Xm/Xh/Xd ago" on each tile</li>
+          <li><b>Run order</b>: while the schedule runs, sequence badges show 🟢 current, ✓ done, 🟡 queued</li>
+        </ul>
 
         <h4>Schedule section</h4>
-        <p>The toggle enables/disables the schedule. Tap day pills to toggle run days. Tap the time to edit it. The countdown shows when the schedule next fires.</p>
+        <p>Toggle enables/disables the schedule. Tap day pills to change run days. Tap the time to edit hours and minutes (tap ✓ to confirm). The countdown shows "Tonight", "Tomorrow", or "in Xh Xm" for the next run.</p>
         </div>
       </div>
     </div>
