@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.8.1';
+const CARD_VERSION = '2.8.2';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1350,46 +1350,54 @@ class SprinklerDashCardV2 extends HTMLElement {
   _showLastRun() {
     const r = this.shadowRoot;
     const body = r.getElementById('lastrun-body');
-    const raw = this._hass.states['input_text.sprinkler_last_run']?.state || '';
-    if (!raw || raw === 'unknown' || raw === '') {
-      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet. Run the schedule to see details here.</p>';
-    } else {
+    r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
+    body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Loading...</p>';
+    // Fetch log file written by Node-RED
+    const token = this._hass.auth?.data?.access_token || this._hass.connection?.options?.auth?.data?.access_token || '';
+    fetch('/api/config', {headers:{Authorization:'Bearer '+token}})
+      .then(() => fetch('/local/sprinkler_log.json?t='+Date.now()))
+      .then(res => res.ok ? res.text() : Promise.reject('not found'))
+      .then(text => {
+        const lines = text.trim().split('\n').filter(Boolean).reverse();
+        if (!lines.length) throw new Error('empty');
+        this._renderLastRunEntries(body, lines.slice(0, 30));
+      }).catch(() => {
+        // fallback to input_text
+        const raw = this._hass.states['input_text.sprinkler_last_run']?.state || '';
+        if (!raw || raw === 'unknown' || raw === '') {
+          body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet.</p>';
+        } else {
+          try { this._renderLastRunEntries(body, [raw]); }
+          catch(e) { body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Could not read last run data.</p>'; }
+        }
+      });
+  }
+
+  _renderLastRunEntries(body, lines) {
+    let html = '';
+    lines.forEach((line, idx) => {
       try {
-        const data = JSON.parse(raw);
+        const data = JSON.parse(line);
         const tsStr = data.t || data.ts || '';
-        const ts = tsStr ? new Date(tsStr).toLocaleString([], {weekday:'long',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
-        let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
-        const zones = (data.zones || data.z || []).map(z => ({
-          name: z.name || z.n || '?',
-          dur: z.dur ?? z.d ?? null,
-          skipped: z.skipped || z.s === 1,
+        const ts = tsStr ? new Date(tsStr).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+        const zones = (data.z || data.zones || []).map(z=>({
+          name: z.n || z.name || '?', dur: z.d ?? z.dur ?? null, skipped: z.s===1 || z.skipped===true,
         }));
         const ran = zones.filter(z=>!z.skipped);
         const skipped = zones.filter(z=>z.skipped);
+        if (idx > 0) html += '<div style="border-top:1px solid rgba(255,255,255,0.07);margin:8px 0"></div>';
+        html += `<div class="lastrun-ts">📅 ${ts}</div>`;
         if (ran.length) {
           html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
-          ran.forEach(z => {
-            html += `<div class="lastrun-row">
-              <span class="lastrun-zone">💧 ${z.name}</span>
-              <span class="lastrun-dur">${z.dur ? z.dur+'m' : '—'}</span>
-            </div>`;
-          });
+          ran.forEach(z => { html += `<div class="lastrun-row"><span class="lastrun-zone">💧 ${z.name}</span><span class="lastrun-dur">${z.dur?z.dur+'m':'—'}</span></div>`; });
         }
         if (skipped.length) {
-          html += `<div class="lastrun-section-lbl" style="margin-top:10px">Skipped (${skipped.length})</div>`;
-          skipped.forEach(z => {
-            html += `<div class="lastrun-row">
-              <span class="lastrun-skipped">⏭ ${z.name}</span>
-              <span class="lastrun-dur">—</span>
-            </div>`;
-          });
+          html += `<div class="lastrun-section-lbl" style="margin-top:6px">Skipped (${skipped.length})</div>`;
+          skipped.forEach(z => { html += `<div class="lastrun-row"><span class="lastrun-skipped">⏭ ${z.name}</span><span class="lastrun-dur">—</span></div>`; });
         }
-        body.innerHTML = html;
-      } catch(e) {
-        body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Could not read last run data. It may be incomplete — run the schedule again to reset.</p>';
-      }
-    }
-    r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
+      } catch(e) {}
+    });
+    body.innerHTML = html || '<p style="color:var(--secondary-text-color,#666)">No run data found.</p>';
   }
 
   _recordLastRun() {
