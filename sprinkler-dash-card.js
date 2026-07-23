@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.8.0';
+const CARD_VERSION = '2.8.1';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1357,7 +1357,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       try {
         const data = JSON.parse(raw);
         const tsStr = data.t || data.ts || '';
-        const ts = tsStr ? new Date(data.ts).toLocaleString([], {weekday:'long',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+        const ts = tsStr ? new Date(tsStr).toLocaleString([], {weekday:'long',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
         let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
         const zones = (data.zones || data.z || []).map(z => ({
           name: z.name || z.n || '?',
@@ -1399,7 +1399,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     const now = new Date();
     const t = now.toISOString().substring(0,16); // 2026-07-23T08:00
     const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>({
-      n: z.name.substring(0,5),
+      n: z.name.substring(0,7),
       d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : 0,
       s: skipList.includes(z.sw) ? 1 : 0,
     }));
