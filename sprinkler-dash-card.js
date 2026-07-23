@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.7.6';
+const CARD_VERSION = '2.7.7';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -417,6 +417,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     .ztop{display:flex;align-items:center;gap:6px;margin-bottom:6px}
     .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s}
     .zseq--on{background:rgba(26,138,100,0.4);color:#4dc49a;border-color:rgba(77,196,154,0.4)}
+    .zseq--done{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.3);border-color:rgba(255,255,255,0.1)}
+    .zseq--queued{background:rgba(255,180,60,0.1);color:rgba(255,180,60,0.6);border-color:rgba(255,180,60,0.2)}
     .zname{flex:1;font-size:13px;font-weight:700;color:var(--primary-text-color,#f0f0f0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .zone--on .zname{color:#7de8c0}
     .zone--disabled .zname{color:var(--secondary-text-color,#555);text-decoration:line-through}
@@ -1515,7 +1517,23 @@ class SprinklerDashCardV2 extends HTMLElement {
       this.shadowRoot.getElementById('zskip-'+i)?.classList.toggle('zskip--active', skipped);
       const skipEl = this.shadowRoot.getElementById('zskip-'+i);
       if (skipEl) skipEl.title = skipped ? 'Skipped — tap to cancel' : 'Skip next scheduled run';
-      this.shadowRoot.getElementById('zseq-'+i)?.classList.toggle('zseq--on',isOn);
+      const seqEl = this.shadowRoot.getElementById('zseq-'+i);
+      if (seqEl) {
+        const scriptRunning = this._hass.states['script.sprinkler']?.state === 'on';
+        seqEl.classList.remove('zseq--on','zseq--done','zseq--queued');
+        if (!scriptRunning) { seqEl.textContent = i+1; }
+        if (isOn) {
+          seqEl.classList.add('zseq--on'); seqEl.textContent = i+1;
+        } else if (scriptRunning && z.schedule_enabled !== false) {
+          const schedZones = this._activeZones().filter(zz=>zz.sw&&zz.schedule_enabled!==false);
+          const currentIdx = schedZones.findIndex(zz=>zz.sw&&this._hass.states[zz.sw]?.state==='on');
+          const myIdx = schedZones.findIndex(zz=>zz.sw===z.sw);
+          if (currentIdx >= 0 && myIdx >= 0) {
+            if (myIdx < currentIdx) { seqEl.classList.add('zseq--done'); seqEl.textContent='✓'; }
+            else if (myIdx > currentIdx) seqEl.classList.add('zseq--queued');
+          } else { seqEl.classList.add('zseq--queued'); }
+        }
+      }
       this.shadowRoot.getElementById('ztog-'+i)?.classList.toggle('ztoggle--on',isOn);
       const inp=this.shadowRoot.getElementById('zdur-'+i);
       if(inp&&inp!==this.shadowRoot.activeElement){inp.min=durMin;inp.max=durMax;inp.value=durVal;}
