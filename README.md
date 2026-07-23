@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your duration helpers, and everything else is configured and auto-created from the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.7.8-green)
+![Version](https://img.shields.io/badge/version-v2.7.9-green)
 ![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 
