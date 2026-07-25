@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.8.3';
+const CARD_VERSION = '2.8.4';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1380,7 +1380,22 @@ class SprinklerDashCardV2 extends HTMLElement {
       } catch(err) {}
     });
     if (!allEntries.length) {
-      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet. Run the schedule to see details here.</p>';
+      const setupBtn = document.createElement('button');
+      setupBtn.style.cssText = 'margin-top:8px;width:100%;padding:10px;border-radius:8px;border:none;background:linear-gradient(135deg,#0a5c45,#1a8a64);color:#fff;font-size:13px;font-weight:700;cursor:pointer';
+      setupBtn.textContent = '⚙️ Set up run logging';
+      const msg = document.createElement('p');
+      msg.style.cssText = 'color:var(--secondary-text-color,#666);margin-bottom:10px';
+      msg.textContent = 'No run recorded yet. Set up automatic logging so every schedule run is saved here.';
+      setupBtn.addEventListener('click', () => {
+        setupBtn.textContent = 'Setting up...'; setupBtn.disabled = true;
+        this._createLogAutomation().then(() => {
+          body.innerHTML = '<p style="color:#4dc49a">✓ Run logging is set up! The next schedule run will be recorded here automatically.</p>';
+        }).catch(e => {
+          body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Could not create automation. Please check HA logs.</p>';
+        });
+      });
+      body.innerHTML = '';
+      body.append(msg, setupBtn);
       return;
     }
     // sort newest first by timestamp
@@ -1410,6 +1425,44 @@ class SprinklerDashCardV2 extends HTMLElement {
       }
     });
     body.innerHTML = html || '<p style="color:var(--secondary-text-color,#666)">No run data found.</p>';
+  }
+
+  async _createLogAutomation() {
+    // Build the action sequence — one set_value call per helper
+    // reads from input_text helpers and prepends new entry
+    const helpers = [
+      'input_text.sprinkler_run_log_0',
+      'input_text.sprinkler_run_log_1',
+      'input_text.sprinkler_run_log_2',
+    ];
+    const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false);
+    // build duration template per zone
+    const durTemplate = '[' + zones.map(z => z.dur ? `{{ states('${z.dur}') | int(0) }}` : '0').join(',') + ']';
+    const skipTemplate = `{{ (states('input_text.sprinkler_skip_zones') | default('')).split(',') | select('ne','') | list | map('regex_search', '(${zones.map(z=>z.sw.replace(/\./g,'\.')).join('|')})') | list }}`;
+
+    // The automation uses a script action to update the ring buffer
+    // We store a compact entry: {t, d:[durations], s:[skipped_indices]}
+    const entryTemplate = `{"t":"{{ now().strftime('%Y-%m-%dT%H:%M') }}","d":${durTemplate},"s":[]}`;
+
+    const actions = helpers.map((e, hi) => ({
+      action: 'input_text.set_value',
+      target: { entity_id: e },
+      data: {
+        value: `{{ (([{"t":"{{ now().strftime('%Y-%m-%dT%H:%M') }}","d":${durTemplate},"s":[]}] + (states('${e}') | from_json | default([], true))) | list)[:4] | to_json }}`
+      }
+    }));
+
+    const config = {
+      alias: 'Sprinkler Run Logger',
+      description: 'Auto-created by Sprinkler Dash Card — logs each run to ring buffer helpers',
+      mode: 'single',
+      triggers: [{ trigger: 'state', entity_id: 'script.sprinkler', from: 'on', to: 'off' }],
+      actions,
+    };
+
+    await this._hass.callApi('POST', 'config/automation/config/' + 'sprinkler_run_logger', config);
+    await this._hass.callService('automation', 'reload');
+    console.log('[SprinklerCard] created automation.sprinkler_run_logger');
   }
 
   _recordLastRun() {
