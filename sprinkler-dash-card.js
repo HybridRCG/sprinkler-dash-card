@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.8.9';
+const CARD_VERSION = '2.9.0';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -496,7 +496,12 @@ class SprinklerDashCardV2 extends HTMLElement {
     .sched-time-wrap{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
     .sched-time{font-size:20px;font-weight:700;color:var(--primary-text-color,#f0f0f0);cursor:pointer;letter-spacing:.02em;line-height:1;padding:2px 4px;border-radius:5px;border:1px solid transparent;transition:border-color .15s,background .15s;min-width:60px;text-align:right}
     .sched-time:hover{border-color:rgba(77,196,154,0.4);background:rgba(26,138,100,0.1)}
-    .sched-time input[type=time]{width:74px;font-size:15px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:2px 4px;outline:none;text-align:center}
+    .sched-time-edit{display:flex;align-items:center;gap:3px}
+    .sched-time-num{width:34px;font-size:16px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:3px 2px;outline:none;text-align:center;-moz-appearance:textfield}
+    .sched-time-num::-webkit-inner-spin-button,.sched-time-num::-webkit-outer-spin-button{-webkit-appearance:none}
+    .sched-time-sep{font-size:16px;font-weight:700;color:var(--primary-text-color,#f0f0f0)}
+    .sched-time-ok{background:#1a8a64;border:none;border-radius:5px;color:#fff;font-size:12px;font-weight:700;padding:4px 7px;cursor:pointer}
+    .sched-time-x{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:var(--secondary-text-color,#aaa);font-size:12px;font-weight:600;padding:4px 6px;cursor:pointer}
     .sched-next{font-size:11px;color:var(--secondary-text-color,#666)}
     .sched-next--on{color:#4dc49a}
     /* CONFIG PANEL — no overflow:hidden so dropdowns escape */
@@ -766,12 +771,34 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
     const timeEl = r.getElementById('sched-time');
     timeEl.addEventListener('click', () => {
-      if (this._editingTime) return; this._editingTime=true;
-      const cur = timeEl.textContent.trim();
-      const inp = document.createElement('input'); inp.type='time'; inp.value=cur;
-      timeEl.innerHTML=''; timeEl.appendChild(inp); inp.focus();
-      const save = () => { this._editingTime=false; const val=inp.value; timeEl.textContent=val||cur; if (val&&val!==cur) this._saveTime(val); };
-      inp.addEventListener('blur', save); inp.addEventListener('change', save);
+      if (this._editingTime) return;
+      this._editingTime = true;
+      const cur = timeEl.dataset.rawTime || timeEl.textContent.trim() || '06:00';
+      const [curH, curM] = cur.split(':').map(Number);
+      timeEl.innerHTML = '';
+      const wrap = document.createElement('div'); wrap.className='sched-time-edit';
+      const hInp = document.createElement('input'); hInp.type='number'; hInp.className='sched-time-num';
+      hInp.min=0; hInp.max=23; hInp.value=String(curH).padStart(2,'0');
+      const sep = document.createElement('span'); sep.className='sched-time-sep'; sep.textContent=':';
+      const mInp = document.createElement('input'); mInp.type='number'; mInp.className='sched-time-num';
+      mInp.min=0; mInp.max=59; mInp.value=String(curM).padStart(2,'0');
+      const okBtn = document.createElement('button'); okBtn.className='sched-time-ok'; okBtn.textContent='✓';
+      const xBtn = document.createElement('button'); xBtn.className='sched-time-x'; xBtn.textContent='✕';
+      const doSave = () => {
+        this._editingTime=false;
+        const h=Math.min(23,Math.max(0,parseInt(hInp.value)||0));
+        const m=Math.min(59,Math.max(0,parseInt(mInp.value)||0));
+        const val=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
+        timeEl.innerHTML=''; timeEl.textContent=val; timeEl.dataset.rawTime=val;
+        if(val!==cur) this._saveTime(val);
+      };
+      const doCancel = () => { this._editingTime=false; timeEl.innerHTML=''; timeEl.textContent=cur; };
+      okBtn.addEventListener('click',(e)=>{e.stopPropagation();doSave();});
+      xBtn.addEventListener('click',(e)=>{e.stopPropagation();doCancel();});
+      hInp.addEventListener('input',()=>{if(parseInt(hInp.value)>23)hInp.value='23';});
+      mInp.addEventListener('input',()=>{if(parseInt(mInp.value)>59)mInp.value='59';});
+      wrap.append(hInp,sep,mInp,okBtn,xBtn);
+      timeEl.appendChild(wrap); hInp.focus(); hInp.select();
     });
     r.getElementById('readme-close').addEventListener('click', () => {
       r.getElementById('readme-modal').classList.remove('readme-modal--open');
