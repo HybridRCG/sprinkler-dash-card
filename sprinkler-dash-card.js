@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.8.6';
+const CARD_VERSION = '2.8.7';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -303,6 +303,8 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _ensureSprinklerScript() {
     if (this._scriptChecked) return;
+    // never rebuild while script is running — would kill an active watering run
+    if (this._hass.states['script.sprinkler']?.state === 'on') return;
     this._scriptChecked = true;
     const needsScript = !this._hass.states['script.sprinkler'];
     const needsSched  = !Object.values(this._hass.states).some(s =>
