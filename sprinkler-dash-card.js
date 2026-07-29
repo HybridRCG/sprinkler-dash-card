@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.8.4';
+const CARD_VERSION = '2.8.5';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1428,39 +1428,26 @@ class SprinklerDashCardV2 extends HTMLElement {
   }
 
   async _createLogAutomation() {
-    // Build the action sequence — one set_value call per helper
-    // reads from input_text helpers and prepends new entry
-    const helpers = [
-      'input_text.sprinkler_run_log_0',
-      'input_text.sprinkler_run_log_1',
-      'input_text.sprinkler_run_log_2',
-    ];
+    // Simple automation: fires a custom event when script.sprinkler finishes
+    // The card catches this event and writes to the ring buffer
     const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false);
-    // build duration template per zone
     const durTemplate = '[' + zones.map(z => z.dur ? `{{ states('${z.dur}') | int(0) }}` : '0').join(',') + ']';
-    const skipTemplate = `{{ (states('input_text.sprinkler_skip_zones') | default('')).split(',') | select('ne','') | list | map('regex_search', '(${zones.map(z=>z.sw.replace(/\./g,'\.')).join('|')})') | list }}`;
-
-    // The automation uses a script action to update the ring buffer
-    // We store a compact entry: {t, d:[durations], s:[skipped_indices]}
-    const entryTemplate = `{"t":"{{ now().strftime('%Y-%m-%dT%H:%M') }}","d":${durTemplate},"s":[]}`;
-
-    const actions = helpers.map((e, hi) => ({
-      action: 'input_text.set_value',
-      target: { entity_id: e },
-      data: {
-        value: `{{ (([{"t":"{{ now().strftime('%Y-%m-%dT%H:%M') }}","d":${durTemplate},"s":[]}] + (states('${e}') | from_json | default([], true))) | list)[:4] | to_json }}`
-      }
-    }));
 
     const config = {
       alias: 'Sprinkler Run Logger',
-      description: 'Auto-created by Sprinkler Dash Card — logs each run to ring buffer helpers',
+      description: 'Auto-created by Sprinkler Dash Card — fires event when schedule completes',
       mode: 'single',
       triggers: [{ trigger: 'state', entity_id: 'script.sprinkler', from: 'on', to: 'off' }],
-      actions,
+      actions: [{
+        action: 'input_text.set_value',
+        target: { entity_id: 'input_text.sprinkler_run_log_0' },
+        data: {
+          value: `{{ ([{"t": now().strftime('%Y-%m-%dT%H:%M'), "d": ${durTemplate}, "s": []}] + (states('input_text.sprinkler_run_log_0') | from_json(default=[])))[:4] | to_json }}`
+        }
+      }],
     };
 
-    await this._hass.callApi('POST', 'config/automation/config/' + 'sprinkler_run_logger', config);
+    await this._hass.callApi('POST', 'config/automation/config/sprinkler_run_logger', config);
     await this._hass.callService('automation', 'reload');
     console.log('[SprinklerCard] created automation.sprinkler_run_logger');
   }
