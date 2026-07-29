@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.8.5';
+const CARD_VERSION = '2.8.6';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1428,22 +1428,20 @@ class SprinklerDashCardV2 extends HTMLElement {
   }
 
   async _createLogAutomation() {
-    // Simple automation: fires a custom event when script.sprinkler finishes
-    // The card catches this event and writes to the ring buffer
+    // Build duration list from active zones
     const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false);
-    const durTemplate = '[' + zones.map(z => z.dur ? `{{ states('${z.dur}') | int(0) }}` : '0').join(',') + ']';
+    const durParts = zones.map(z => z.dur ? `states('${z.dur}')|int(0)` : '0').join(', ');
+    const valTemplate = `{{ ([{"t": now().strftime('%Y-%m-%dT%H:%M'), "d": [${durParts}], "s": []}] + (states('input_text.sprinkler_run_log_0') | from_json(default=[])))[:4] | to_json }}`;
 
     const config = {
       alias: 'Sprinkler Run Logger',
-      description: 'Auto-created by Sprinkler Dash Card — fires event when schedule completes',
+      description: 'Auto-created by Sprinkler Dash Card — logs each schedule run',
       mode: 'single',
       triggers: [{ trigger: 'state', entity_id: 'script.sprinkler', from: 'on', to: 'off' }],
       actions: [{
         action: 'input_text.set_value',
         target: { entity_id: 'input_text.sprinkler_run_log_0' },
-        data: {
-          value: `{{ ([{"t": now().strftime('%Y-%m-%dT%H:%M'), "d": ${durTemplate}, "s": []}] + (states('input_text.sprinkler_run_log_0') | from_json(default=[])))[:4] | to_json }}`
-        }
+        data: { value: valTemplate }
       }],
     };
 
