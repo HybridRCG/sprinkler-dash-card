@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.0';
+const CARD_VERSION = '2.9.1';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -797,8 +797,11 @@ class SprinklerDashCardV2 extends HTMLElement {
       xBtn.addEventListener('click',(e)=>{e.stopPropagation();doCancel();});
       hInp.addEventListener('input',()=>{if(parseInt(hInp.value)>23)hInp.value='23';});
       mInp.addEventListener('input',()=>{if(parseInt(mInp.value)>59)mInp.value='59';});
+      hInp.setAttribute('inputmode','numeric');
+      mInp.setAttribute('inputmode','numeric');
       wrap.append(hInp,sep,mInp,okBtn,xBtn);
-      timeEl.appendChild(wrap); hInp.focus(); hInp.select();
+      timeEl.appendChild(wrap);
+      setTimeout(() => { timeEl.scrollIntoView({behavior:'smooth',block:'center'}); hInp.focus(); hInp.select(); }, 100);
     });
     r.getElementById('readme-close').addEventListener('click', () => {
       r.getElementById('readme-modal').classList.remove('readme-modal--open');
