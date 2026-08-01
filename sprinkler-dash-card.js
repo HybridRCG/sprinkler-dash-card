@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.2';
+const CARD_VERSION = '2.9.3';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -431,7 +431,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     .ztop{display:flex;align-items:center;gap:6px;margin-bottom:6px}
     .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s}
     .zseq--on{background:rgba(26,138,100,0.4);color:#4dc49a;border-color:rgba(77,196,154,0.4)}
-    .zseq--done{background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.3);border-color:rgba(255,255,255,0.1)}
+    .zseq--done{background:rgba(26,138,100,0.25);color:#4dc49a;border-color:rgba(77,196,154,0.5)}
     .zseq--queued{background:rgba(255,180,60,0.1);color:rgba(255,180,60,0.6);border-color:rgba(255,180,60,0.2)}
     .zname{flex:1;font-size:13px;font-weight:700;color:var(--primary-text-color,#f0f0f0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .zone--on .zname{color:#7de8c0}
@@ -1647,9 +1647,16 @@ class SprinklerDashCardV2 extends HTMLElement {
       if (seqEl) {
         const scriptRunning = this._hass.states['script.sprinkler']?.state === 'on';
         seqEl.classList.remove('zseq--on','zseq--done','zseq--queued');
+        // check if zone ran in the last 3 hours (script just finished)
+        const scriptLastRan = this._hass.states['script.sprinkler']?.last_changed;
+        const scriptJustRan = scriptLastRan && (Date.now() - new Date(scriptLastRan).getTime()) < 3*3600000;
+        const swLastChanged = z.sw ? new Date(this._hass.states[z.sw]?.last_changed||0).getTime() : 0;
+        const ranRecently = swLastChanged > 0 && (Date.now() - swLastChanged) < 3*3600000;
         if (!scriptRunning) { seqEl.textContent = i+1; }
         if (isOn) {
           seqEl.classList.add('zseq--on'); seqEl.textContent = i+1;
+        } else if (!scriptRunning && scriptJustRan && ranRecently && z.schedule_enabled !== false) {
+          seqEl.classList.add('zseq--done'); seqEl.textContent = '✓';
         } else if (scriptRunning && z.schedule_enabled !== false) {
           const schedZones = this._activeZones().filter(zz=>zz.sw&&zz.schedule_enabled!==false);
           const currentIdx = schedZones.findIndex(zz=>zz.sw&&this._hass.states[zz.sw]?.state==='on');
