@@ -38,8 +38,10 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 **Zone control**
 - Up to 12 configurable zones — 2-column grid with toggle, progress bar, countdown timer, and 1-minute adjustable duration
 - Manual zone on with auto-stop timer — set duration before turning on, card stops the valve automatically
+- Zone expand popup — tap any zone tile to open a large overlay with big controls (toggle, duration, skip, schedule toggle, last run)
 - Zone last-run badge — shows "last: Xm/Xh/Xd ago" on each tile
-- Zone run order indicator — during active schedule, sequence badges show green (current), ✓ (done), amber (queued)
+- Zone run order indicator — during active schedule, sequence badges show green (current), ✓ done (persists 3h after run), amber (queued)
+- Blue sequence badge — persists 8 hours after a manual zone run (stored in auto-created helper, survives reloads)
 - Per-zone schedule toggle — tick/untick each zone to include or exclude from scheduled runs
 - Per-zone skip next run — one-tap skip for the next run only, self-clearing after the schedule fires
 
@@ -207,6 +209,8 @@ On first use, tap **⚙️ Set up run logging** to create a HA automation that r
 
 | Version | Changes |
 |---|---|
+| v2.9.4 | Zone expand popup (tap tile for big controls); blue badge 8h after manual run |
+| v2.9.3 | Green tick on completed zones persists 3h after schedule finishes |
 | v2.9.2 | Fixed premature manual zone auto-stop after card reload |
 | v2.9.1 | Mobile time editor scrolls into view when keyboard opens |
 | v2.9.0 | Replaced native time picker with HH/MM number inputs — no mobile scroll issues |
