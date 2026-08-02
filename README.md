@@ -196,6 +196,8 @@ Tap **Last Run** to see recent schedule runs with timestamps, zone durations and
 
 On first use, tap **⚙️ Set up run logging** to create a HA automation that records every run automatically — even when the card is not open. Stores up to 12 runs (approximately one month at 3 runs per week).
 
+Tap **↻** in the Last Run header to refresh the data after a schedule completes (there is a short delay between the schedule finishing and the helper updating).
+
 ---
 
 ## Support
@@ -209,6 +211,7 @@ On first use, tap **⚙️ Set up run logging** to create a HA automation that r
 
 | Version | Changes |
 |---|---|
+| v2.9.5 | Refresh button in Last Run popup; fixed stale log entries |
 | v2.9.4 | Zone expand popup (tap tile for big controls); blue badge 8h after manual run |
 | v2.9.3 | Green tick on completed zones persists 3h after schedule finishes |
 | v2.9.2 | Fixed premature manual zone auto-stop after card reload |
