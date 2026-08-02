@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.3';
+const CARD_VERSION = '2.9.4';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -189,14 +189,36 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _toggleSkip(z) {
     const e = 'input_text.sprinkler_skip_zones';
-    if (!this._hass.states[e]) {
-      console.warn('[SprinklerCard] skip helper not ready yet');
-      return;
-    }
+    if (!this._hass.states[e]) { console.warn('[SprinklerCard] skip helper not ready yet'); return; }
     const cur = this._skipList();
     const isSkipped = cur.includes(z.sw);
     const next = isSkipped ? cur.filter(x=>x!==z.sw) : [...cur, z.sw];
     this._svc('input_text','set_value',{entity_id:e, value: next.join(',')});
+  }
+
+  _manualRunMap() {
+    const e = 'input_text.sprinkler_manual_runs';
+    const raw = this._hass.states[e]?.state || '';
+    if (!raw || raw === 'unknown') return {};
+    try { return JSON.parse(raw); } catch(err) { return {}; }
+  }
+
+  _isManualRecent(sw, hours=8) {
+    const map = this._manualRunMap();
+    const ts = map[sw];
+    if (!ts) return false;
+    return (Date.now() - new Date(ts).getTime()) < hours * 3600000;
+  }
+
+  _recordManualRun(sw) {
+    const e = 'input_text.sprinkler_manual_runs';
+    if (!this._hass.states[e]) return;
+    const map = this._manualRunMap();
+    map[sw] = new Date().toISOString();
+    // prune entries older than 24h to keep it small
+    Object.keys(map).forEach(k => { if ((Date.now() - new Date(map[k]).getTime()) > 24*3600000) delete map[k]; });
+    const val = JSON.stringify(map);
+    if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
   }
 
   _saveConfig(patch) {
@@ -313,6 +335,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     );
     const needsSkipHelper = !this._hass.states['input_text.sprinkler_skip_zones'];
     const needsLogHelpers = !this._hass.states['input_text.sprinkler_run_log_0'];
+    const needsManualHelper = !this._hass.states['input_text.sprinkler_manual_runs'];
 
     const afterHelper = (helperJustCreated) => {
       if (needsScript || helperJustCreated) {
@@ -324,10 +347,11 @@ class SprinklerDashCardV2 extends HTMLElement {
       }
     };
 
-    if (needsSkipHelper || needsLogHelpers) {
+    if (needsSkipHelper || needsLogHelpers || needsManualHelper) {
       const creates = [];
       if (needsSkipHelper) creates.push(this._createSkipHelper());
       if (needsLogHelpers) creates.push(this._createLogHelpers());
+      if (needsManualHelper) creates.push(this._createManualHelper());
       Promise.all(creates).then(() => setTimeout(()=>afterHelper(needsSkipHelper), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
     } else {
       afterHelper(false);
@@ -375,6 +399,16 @@ class SprinklerDashCardV2 extends HTMLElement {
       console.log('[SprinklerCard] created input_text.sprinkler_skip_zones');
     } catch(e) {
       console.warn('[SprinklerCard] could not auto-create skip helper — per-zone skip will be unavailable until input_text.sprinkler_skip_zones exists', e);
+    }
+  }
+
+  async _createManualHelper() {
+    try {
+      await this._hass.callApi('POST', 'config/helpers/input_text', {
+        name: 'Sprinkler Manual Runs', max: 255, min: 0, mode: 'text', icon: 'mdi:hand-water',
+      });
+    } catch(e) {
+      try { await this._hass.connection.sendMessagePromise({type:'input_text/create',name:'Sprinkler Manual Runs',max:255,min:0,mode:'text',initial:'{}',icon:'mdi:hand-water'}); } catch(e2) {}
     }
   }
 
@@ -432,6 +466,37 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s}
     .zseq--on{background:rgba(26,138,100,0.4);color:#4dc49a;border-color:rgba(77,196,154,0.4)}
     .zseq--done{background:rgba(26,138,100,0.25);color:#4dc49a;border-color:rgba(77,196,154,0.5)}
+    .zseq--manual{background:rgba(40,80,200,0.35);color:#7eb4ff;border-color:rgba(80,140,255,0.6)}
+    /* zone expand modal */
+    .zexpand-modal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.8);align-items:center;justify-content:center;padding:16px}
+    .zexpand-modal--open{display:flex}
+    .zexpand-box{background:#1a1a1a;border:1px solid rgba(77,196,154,0.3);border-radius:14px;width:100%;max-width:380px;padding:0;overflow:hidden}
+    .zexpand-hdr{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.08)}
+    .zexpand-name{font-size:17px;font-weight:700;color:var(--primary-text-color,#eee)}
+    .zexpand-close{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:7px;color:var(--secondary-text-color,#aaa);font-size:13px;font-weight:600;padding:5px 10px;cursor:pointer}
+    .zexpand-body{padding:16px}
+    .zexpand-toggle-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
+    .zexpand-toggle-lbl{font-size:14px;color:var(--primary-text-color,#eee);font-weight:600}
+    .zexpand-toggle{width:44px;height:24px;border-radius:12px;background:rgba(255,255,255,0.1);border:none;cursor:pointer;position:relative;transition:background .2s;flex-shrink:0}
+    .zexpand-toggle--on{background:#1a8a64}
+    .zexpand-toggle-thumb{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .2s}
+    .zexpand-toggle--on .zexpand-toggle-thumb{transform:translateX(20px)}
+    .zexpand-stat{font-size:13px;color:var(--secondary-text-color,#aaa);margin-bottom:4px}
+    .zexpand-prog-track{height:6px;background:rgba(255,255,255,0.08);border-radius:3px;margin-bottom:14px;overflow:hidden}
+    .zexpand-prog-fill{height:100%;background:#1a8a64;border-radius:3px;transition:width .5s linear;width:0%}
+    .zexpand-dur-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+    .zexpand-dur-lbl{font-size:13px;color:var(--secondary-text-color,#aaa);min-width:60px}
+    .zexpand-dur-inp{width:60px;font-size:20px;font-weight:700;text-align:center;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:var(--primary-text-color,#eee);padding:6px 4px;outline:none;-moz-appearance:textfield}
+    .zexpand-dur-inp::-webkit-inner-spin-button,.zexpand-dur-inp::-webkit-outer-spin-button{-webkit-appearance:none}
+    .zexpand-dur-unit{font-size:13px;color:var(--secondary-text-color,#aaa)}
+    .zexpand-dur-btn{width:36px;height:36px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.06);color:var(--primary-text-color,#eee);font-size:18px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center}
+    .zexpand-dur-btn:hover{background:rgba(255,255,255,0.12)}
+    .zexpand-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid rgba(255,255,255,0.06)}
+    .zexpand-row-lbl{font-size:13px;color:var(--secondary-text-color,#aaa)}
+    .zexpand-last{font-size:12px;color:var(--secondary-text-color,#666)}
+    .zexpand-skip-btn{padding:5px 10px;border-radius:7px;border:1px solid rgba(255,180,60,0.3);background:rgba(255,180,60,0.1);color:#ffb43c;font-size:12px;font-weight:600;cursor:pointer}
+    .zexpand-skip-btn--active{background:rgba(255,180,60,0.25);border-color:rgba(255,180,60,0.6)}
+    .zexpand-sched-cb{width:16px;height:16px;accent-color:#1a8a64;cursor:pointer}
     .zseq--queued{background:rgba(255,180,60,0.1);color:rgba(255,180,60,0.6);border-color:rgba(255,180,60,0.2)}
     .zname{flex:1;font-size:13px;font-weight:700;color:var(--primary-text-color,#f0f0f0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     .zone--on .zname{color:#7de8c0}
@@ -647,6 +712,40 @@ class SprinklerDashCardV2 extends HTMLElement {
       </div>
     </div>
     <div class="cfg-panel" id="cfg-panel"></div>
+    <div class="zexpand-modal" id="zexpand-modal">
+      <div class="zexpand-box">
+        <div class="zexpand-hdr">
+          <span class="zexpand-name" id="zexpand-name">Zone</span>
+          <button class="zexpand-close" id="zexpand-close">✕ Close</button>
+        </div>
+        <div class="zexpand-body">
+          <div class="zexpand-toggle-row">
+            <span class="zexpand-toggle-lbl" id="zexpand-status">Ready</span>
+            <button class="zexpand-toggle" id="zexpand-toggle"><div class="zexpand-toggle-thumb"></div></button>
+          </div>
+          <div class="zexpand-prog-track"><div class="zexpand-prog-fill" id="zexpand-prog"></div></div>
+          <div class="zexpand-dur-row">
+            <span class="zexpand-dur-lbl">Duration</span>
+            <button class="zexpand-dur-btn" id="zexpand-dur-m">−</button>
+            <input type="number" class="zexpand-dur-inp" id="zexpand-dur-inp" min="0" max="120" step="1">
+            <span class="zexpand-dur-unit">min</span>
+            <button class="zexpand-dur-btn" id="zexpand-dur-p">+</button>
+          </div>
+          <div class="zexpand-row">
+            <span class="zexpand-row-lbl">Last run</span>
+            <span class="zexpand-last" id="zexpand-last">—</span>
+          </div>
+          <div class="zexpand-row">
+            <span class="zexpand-row-lbl">Skip next run</span>
+            <button class="zexpand-skip-btn" id="zexpand-skip">Skip</button>
+          </div>
+          <div class="zexpand-row">
+            <span class="zexpand-row-lbl">Include in schedule</span>
+            <input type="checkbox" class="zexpand-sched-cb" id="zexpand-sched-cb">
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="readme-modal" id="readme-modal">
       <div class="readme-box">
         <div class="readme-sticky">
@@ -753,6 +852,10 @@ class SprinklerDashCardV2 extends HTMLElement {
     r.getElementById('lastrun-close').addEventListener('click', () => {
       r.getElementById('lastrun-modal').classList.remove('lastrun-modal--open');
     });
+    r.getElementById('zexpand-close').addEventListener('click', () => {
+      r.getElementById('zexpand-modal').classList.remove('zexpand-modal--open');
+      clearInterval(this._expandTimer);
+    });
     r.getElementById('sched-toggle').addEventListener('click', () => {
       const e = this._cfg.schedule_entity; if (!e) return;
       const isOn = this._hass.states[e]?.state==='on';
@@ -852,6 +955,11 @@ class SprinklerDashCardV2 extends HTMLElement {
       db.append(bm,bp); dr.append(dl,di,du,db);
       const zlast=document.createElement('div'); zlast.className='zlast'; zlast.id='zlast-'+i;
       el.append(top,pt,stat,zlast,dv,dr); grid.appendChild(el);
+      el.addEventListener('click',(ev)=>{
+        const tag=ev.target.tagName.toLowerCase();
+        if(['button','input','ha-icon'].includes(tag)||ev.target.closest('.zskip,.ztoggle,.zdur-row')) return;
+        this._openZoneExpand(i);
+      });
       skip.addEventListener('click',()=>{
         if (!z.sw) return;
         this._toggleSkip(z);
@@ -863,7 +971,10 @@ class SprinklerDashCardV2 extends HTMLElement {
         const msg = isOn ? `Turn off ${z.name}?` : `Turn on ${z.name}?`;
         const okClass = isOn ? 'confirm-btn--danger' : 'confirm-btn--ok';
         this._confirm(z.name, msg, okClass).then(ok => {
-          if (ok) this._svc('switch', action, {entity_id:z.sw});
+          if (!ok) return;
+          this._svc('switch', action, {entity_id:z.sw});
+          // record manual run when turning off
+          if (isOn) this._recordManualRun(z.sw);
         });
       });
       const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); if(this._onTimes[i])this._onTimes[i].totalSecs=val*60; };
@@ -1391,6 +1502,98 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
   }
 
+  _openZoneExpand(i) {
+    const z = this._activeZones()[i];
+    if (!z) return;
+    const r = this.shadowRoot;
+    this._expandIdx = i;
+    r.getElementById('zexpand-name').textContent = z.name;
+    const modal = r.getElementById('zexpand-modal');
+    modal.classList.add('zexpand-modal--open');
+
+    const tog = r.getElementById('zexpand-toggle');
+    const stat = r.getElementById('zexpand-status');
+    const prog = r.getElementById('zexpand-prog');
+    const durInp = r.getElementById('zexpand-dur-inp');
+    const lastEl = r.getElementById('zexpand-last');
+    const skipBtn = r.getElementById('zexpand-skip');
+    const schedCb = r.getElementById('zexpand-sched-cb');
+
+    // set duration
+    const durVal = z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||10)) : 10;
+    durInp.value = durVal;
+
+    // set schedule checkbox
+    schedCb.checked = z.schedule_enabled !== false;
+    schedCb.onchange = () => {
+      const zones = JSON.parse(JSON.stringify(this._cfg.zones));
+      zones[this._cfg.zones.indexOf(this._cfg.zones.find(zz=>zz.sw===z.sw))].schedule_enabled = schedCb.checked;
+      this._saveConfig({zones});
+    };
+
+    // dur buttons
+    r.getElementById('zexpand-dur-m').onclick = () => {
+      const v = Math.max(0,parseInt(durInp.value||0)-1); durInp.value=v;
+      if(z.dur) this._svc('input_number','set_value',{entity_id:z.dur,value:v});
+    };
+    r.getElementById('zexpand-dur-p').onclick = () => {
+      const v = Math.min(120,parseInt(durInp.value||0)+1); durInp.value=v;
+      if(z.dur) this._svc('input_number','set_value',{entity_id:z.dur,value:v});
+    };
+    durInp.onchange = () => {
+      const v = Math.min(120,Math.max(0,parseInt(durInp.value||0)));
+      durInp.value=v;
+      if(z.dur) this._svc('input_number','set_value',{entity_id:z.dur,value:v});
+    };
+
+    // toggle
+    tog.onclick = () => {
+      const isOn = this._hass.states[z.sw]?.state==='on';
+      if(!z.sw) return;
+      const msg = isOn ? `Turn off ${z.name}?` : `Turn on ${z.name}?`;
+      const okClass = isOn ? 'confirm-btn--danger' : 'confirm-btn--ok';
+      this._confirm(z.name, msg, okClass).then(ok => {
+        if (!ok) return;
+        this._svc('switch', isOn?'turn_off':'turn_on', {entity_id:z.sw});
+        if (isOn) this._recordManualRun(z.sw);
+      });
+    };
+
+    // skip button
+    skipBtn.onclick = () => { this._toggleSkip(z); };
+
+    // last run
+    const swState = this._hass.states[z.sw];
+    if (swState?.last_changed) {
+      const mins = Math.round((Date.now()-new Date(swState.last_changed).getTime())/60000);
+      lastEl.textContent = mins < 60 ? mins+'m ago' : mins < 1440 ? Math.floor(mins/60)+'h ago' : Math.floor(mins/1440)+'d ago';
+    } else { lastEl.textContent = '—'; }
+
+    // live update loop
+    clearInterval(this._expandTimer);
+    this._expandTimer = setInterval(() => {
+      const z2 = this._activeZones()[this._expandIdx];
+      if (!z2 || !z2.sw) return;
+      const isOn = this._hass.states[z2.sw]?.state === 'on';
+      tog.className = 'zexpand-toggle' + (isOn?' zexpand-toggle--on':'');
+      tog.innerHTML = '<div class="zexpand-toggle-thumb"></div>';
+      const elapsed = isOn && this._onTimes[this._expandIdx] ? (Date.now()-this._onTimes[this._expandIdx].ts)/1000 : 0;
+      const total = (this._onTimes[this._expandIdx]?.totalSecs) || (durInp.value*60);
+      if (isOn && total > 0) {
+        const pct = Math.min(100,(elapsed/total)*100).toFixed(1);
+        prog.style.width = pct+'%';
+        const rem = Math.max(0,Math.round(total-elapsed));
+        stat.textContent = Math.floor(rem/60)+'m '+String(rem%60).padStart(2,'0')+'s left';
+      } else {
+        prog.style.width = '0%';
+        const skipped = this._isZoneSkipped(z2);
+        stat.textContent = skipped ? 'Skip next run' : 'Ready';
+      }
+      skipBtn.textContent = this._isZoneSkipped(z2) ? 'Cancel skip' : 'Skip next run';
+      skipBtn.className = 'zexpand-skip-btn' + (this._isZoneSkipped(z2)?' zexpand-skip-btn--active':'');
+    }, 500);
+  }
+
   _showLastRun() {
     const r = this.shadowRoot;
     const body = r.getElementById('lastrun-body');
@@ -1657,6 +1860,8 @@ class SprinklerDashCardV2 extends HTMLElement {
           seqEl.classList.add('zseq--on'); seqEl.textContent = i+1;
         } else if (!scriptRunning && scriptJustRan && ranRecently && z.schedule_enabled !== false) {
           seqEl.classList.add('zseq--done'); seqEl.textContent = '✓';
+        } else if (!scriptRunning && !scriptJustRan && this._isManualRecent(z.sw)) {
+          seqEl.classList.add('zseq--manual'); seqEl.textContent = i+1;
         } else if (scriptRunning && z.schedule_enabled !== false) {
           const schedZones = this._activeZones().filter(zz=>zz.sw&&zz.schedule_enabled!==false);
           const currentIdx = schedZones.findIndex(zz=>zz.sw&&this._hass.states[zz.sw]?.state==='on');
