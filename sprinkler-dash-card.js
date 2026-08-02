@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.4';
+const CARD_VERSION = '2.9.5';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -706,6 +706,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       <div class="lastrun-box">
         <div class="lastrun-hdr">
           <h3>🕐 Last Run</h3>
+          <button class="lastrun-close-btn" id="lastrun-refresh" style="margin-right:4px">↻</button>
           <button class="lastrun-close-btn" id="lastrun-close">Close</button>
         </div>
         <div class="lastrun-body" id="lastrun-body">No run recorded yet.</div>
@@ -852,6 +853,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     r.getElementById('lastrun-close').addEventListener('click', () => {
       r.getElementById('lastrun-modal').classList.remove('lastrun-modal--open');
     });
+    r.getElementById('lastrun-refresh').addEventListener('click', () => this._showLastRun());
     r.getElementById('zexpand-close').addEventListener('click', () => {
       r.getElementById('zexpand-modal').classList.remove('zexpand-modal--open');
       clearInterval(this._expandTimer);
