@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.9';
+const CARD_VERSION = '2.9.10';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -264,6 +264,42 @@ class SprinklerDashCardV2 extends HTMLElement {
         resolve(true);
       };
       okBtn.addEventListener('click', onOk);
+    });
+  }
+
+  _confirmWithTimer(title, msg, defaultDur=10) {
+    if (!this._cfg.confirm_actions) return Promise.resolve({dur: defaultDur});
+    const r = this.shadowRoot;
+    r.getElementById('confirm-title').textContent = title;
+    const msgEl = r.getElementById('confirm-msg');
+    msgEl.innerHTML = '';
+    const row = document.createElement('div'); row.style.cssText='display:flex;align-items:center;justify-content:center;gap:8px;margin:4px 0 0';
+    const lbl = document.createElement('span'); lbl.style.cssText='font-size:13px;color:var(--secondary-text-color,#aaa)'; lbl.textContent=msg;
+    const durInp = document.createElement('input'); durInp.type='number';
+    durInp.style.cssText='width:52px;padding:5px 6px;border-radius:6px;border:1px solid #1a8a64;background:rgba(26,138,100,0.15);color:var(--primary-text-color,#eee);font-size:15px;font-weight:700;text-align:center;outline:none';
+    durInp.min=1; durInp.max=120; durInp.value=defaultDur;
+    durInp.setAttribute('inputmode','numeric');
+    const unit = document.createElement('span'); unit.style.cssText='font-size:13px;color:var(--secondary-text-color,#aaa)'; unit.textContent='min';
+    row.append(lbl, durInp, unit); msgEl.appendChild(row);
+    const okBtn = r.getElementById('confirm-ok');
+    okBtn.className = 'confirm-btn confirm-btn--ok';
+    okBtn.textContent = '▶ Turn On';
+    r.getElementById('confirm-modal').classList.add('confirm-modal--open');
+    return new Promise(resolve => {
+      const onOk = () => {
+        cleanup();
+        resolve({ dur: Math.min(120, Math.max(1, parseInt(durInp.value)||defaultDur)) });
+      };
+      const onCancel = () => { cleanup(); resolve(null); };
+      const cleanup = () => {
+        r.getElementById('confirm-modal').classList.remove('confirm-modal--open');
+        okBtn.removeEventListener('click', onOk);
+        r.getElementById('confirm-cancel').removeEventListener('click', onCancel);
+        okBtn.textContent = 'Confirm';
+        msgEl.innerHTML = '';
+      };
+      okBtn.addEventListener('click', onOk);
+      r.getElementById('confirm-cancel').addEventListener('click', onCancel);
     });
   }
 
