@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.6';
+const CARD_VERSION = '2.9.7';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1552,13 +1552,28 @@ class SprinklerDashCardV2 extends HTMLElement {
     tog.onclick = () => {
       const isOn = this._hass.states[z.sw]?.state==='on';
       if(!z.sw) return;
-      const msg = isOn ? `Turn off ${z.name}?` : `Turn on ${z.name}?`;
-      const okClass = isOn ? 'confirm-btn--danger' : 'confirm-btn--ok';
-      this._confirm(z.name, msg, okClass).then(ok => {
-        if (!ok) return;
-        this._svc('switch', isOn?'turn_off':'turn_on', {entity_id:z.sw});
-        if (isOn) this._recordManualRun(z.sw);
-      });
+      if (isOn) {
+        if (this._manualTimers) { clearTimeout(this._manualTimers[i]); delete this._manualTimers[i]; }
+        this._confirm(z.name, `Turn off ${z.name}?`, 'confirm-btn--danger').then(ok => {
+          if (!ok) return;
+          this._svc('switch','turn_off',{entity_id:z.sw});
+          this._recordManualRun(z.sw);
+        });
+      } else {
+        const defaultDur = z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||10)) : 10;
+        this._confirmWithTimer(z.name, `Turn on ${z.name} for:`, defaultDur).then(result => {
+          if (!result) return;
+          this._svc('switch','turn_on',{entity_id:z.sw});
+          if (!this._manualTimers) this._manualTimers = {};
+          if (result.dur > 0) {
+            this._manualTimers[i] = setTimeout(() => {
+              this._svc('switch','turn_off',{entity_id:z.sw});
+              this._recordManualRun(z.sw);
+              delete this._manualTimers[i];
+            }, result.dur * 60 * 1000);
+          }
+        });
+      }
     };
 
     // skip button
@@ -1880,7 +1895,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const elapsed=isOn&&this._onTimes[i]?(Date.now()-this._onTimes[i].ts)/1000:0;
       const totalSecs=this._onTimes[i]?.totalSecs||durVal*60;
       // auto-stop only if this card session tracked the turn-on and elapsed exceeds duration
-      if (isOn && this._onTimes[i] && elapsed > totalSecs && totalSecs > 0 && z.sw && this._hass.states['script.sprinkler']?.state !== 'on') {
+      if (isOn && this._onTimes[i] && elapsed > (totalSecs + 120) && totalSecs > 60 && z.sw && this._hass.states['script.sprinkler']?.state !== 'on') {
         if (!this._autoStopPending) this._autoStopPending = {};
         if (!this._autoStopPending[z.sw]) {
           this._autoStopPending[z.sw] = true;
