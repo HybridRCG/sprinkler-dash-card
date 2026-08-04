@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.10';
+const CARD_VERSION = '2.9.11';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1934,8 +1934,9 @@ class SprinklerDashCardV2 extends HTMLElement {
         // check if zone ran in the last 3 hours (script just finished)
         const scriptLastRan = this._hass.states['script.sprinkler']?.last_changed;
         const scriptJustRan = scriptLastRan && (Date.now() - new Date(scriptLastRan).getTime()) < 3*3600000;
-        const swLastChanged = z.sw ? new Date(this._hass.states[z.sw]?.last_changed||0).getTime() : 0;
-        const ranRecently = swLastChanged > 0 && (Date.now() - swLastChanged) < 3*3600000;
+        // use script last_triggered (not switch last_changed which resets on HA restart)
+        const scriptLastTriggered = this._hass.states['script.sprinkler']?.attributes?.last_triggered;
+        const ranRecently = scriptLastTriggered && (Date.now() - new Date(scriptLastTriggered).getTime()) < 3*3600000;
         if (!scriptRunning) { seqEl.textContent = i+1; }
         if (isOn) {
           seqEl.classList.add('zseq--on'); seqEl.textContent = i+1;
