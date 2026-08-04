@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.12';
+const CARD_VERSION = '2.9.13';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -515,7 +515,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s}
     .zseq--on{background:rgba(26,138,100,0.4);color:#4dc49a;border-color:rgba(77,196,154,0.4)}
     .zseq--done{background:rgba(26,138,100,0.25);color:#4dc49a;border-color:rgba(77,196,154,0.5)}
-    .bmc-footer{display:flex;justify-content:center;padding:10px 0 12px;margin-top:2px}
     .zseq--manual{background:rgba(40,80,200,0.35);color:#7eb4ff;border-color:rgba(80,140,255,0.6)}
     /* zone expand modal */
     .zexpand-modal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.8);align-items:center;justify-content:center;padding:16px}
@@ -751,11 +750,6 @@ class SprinklerDashCardV2 extends HTMLElement {
           <div class="sched-next" id="sched-next">—</div>
         </div>
       </div>
-    </div>
-    <div class="bmc-footer">
-      <a href="https://buymeacoffee.com/hybridrcg" target="_blank" rel="noopener">
-        <img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" alt="Buy Me A Coffee" style="height:28px;border-radius:5px">
-      </a>
     </div>
     <div class="lastrun-modal" id="lastrun-modal">
       <div class="lastrun-box">
