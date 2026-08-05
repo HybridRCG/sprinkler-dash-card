@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.14';
+const CARD_VERSION = '2.9.15';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -31,6 +31,7 @@ const DEFAULT_CONFIG = {
   jojo_low_pct: 35,
   meta_slots: JSON.parse(JSON.stringify(DEFAULT_META_SLOTS)),
   rain_restore_hours: 48,
+  tick_hours: 3,
   rules: {
     rain_disable_schedule: true,
     jojo_shutoff_zones: true,
@@ -1358,6 +1359,15 @@ class SprinklerDashCardV2 extends HTMLElement {
     const rrHint=document.createElement('span'); rrHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rrHint.textContent='h → re-enable sched';
     rrRow.append(rrLbl,rrInp,rrHint); slist.appendChild(rrRow);
 
+    // tick mark duration
+    const tkRow=document.createElement('div'); tkRow.className='cfg-field-row';
+    const tkLbl=document.createElement('label'); tkLbl.className='cfg-field-lbl'; tkLbl.textContent='Tick duration';
+    const tkInp=document.createElement('input'); tkInp.type='number'; tkInp.className='cfg-field-input';
+    tkInp.value=this._cfg.tick_hours||3; tkInp.placeholder='3'; tkInp.min=1; tkInp.max=24;
+    tkInp.dataset.cfgKey='tick_hours';
+    const tkHint=document.createElement('span'); tkHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; tkHint.textContent='h → show ✓ after run';
+    tkRow.append(tkLbl,tkInp,tkHint); slist.appendChild(tkRow);
+
     // jojo low %
     const jlRow=document.createElement('div'); jlRow.className='cfg-field-row';
     const jlLbl=document.createElement('label'); jlLbl.className='cfg-field-lbl'; jlLbl.textContent='Jojo low %';
@@ -1511,6 +1521,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (rtEl) this._cfg.rain_threshold=parseFloat(rtEl.value)||5;
     const rrEl=panel.querySelector('[data-cfg-key="rain_restore_hours"]');
     if (rrEl) this._cfg.rain_restore_hours=parseFloat(rrEl.value)||48;
+    const tkEl=panel.querySelector('[data-cfg-key="tick_hours"]');
+    if (tkEl) this._cfg.tick_hours=parseFloat(tkEl.value)||3;
     const jlEl=panel.querySelector('[data-cfg-key="jojo_low_pct"]');
     if (jlEl) this._cfg.jojo_low_pct=parseFloat(jlEl.value)||35;
 
@@ -1951,10 +1963,10 @@ class SprinklerDashCardV2 extends HTMLElement {
         seqEl.classList.remove('zseq--on','zseq--done','zseq--queued');
         // check if zone ran in the last 3 hours (script just finished)
         const scriptLastRan = this._hass.states['script.sprinkler']?.last_changed;
-        const scriptJustRan = scriptLastRan && (Date.now() - new Date(scriptLastRan).getTime()) < 3*3600000;
+        const scriptJustRan = scriptLastRan && (Date.now() - new Date(scriptLastRan).getTime()) < (this._cfg.tick_hours||3)*3600000;
         // use script last_triggered (not switch last_changed which resets on HA restart)
         const scriptLastTriggered = this._hass.states['script.sprinkler']?.attributes?.last_triggered;
-        const ranRecently = scriptLastTriggered && (Date.now() - new Date(scriptLastTriggered).getTime()) < 3*3600000;
+        const ranRecently = scriptLastTriggered && (Date.now() - new Date(scriptLastTriggered).getTime()) < (this._cfg.tick_hours||3)*3600000;
         if (!scriptRunning) { seqEl.textContent = i+1; }
         if (isOn) {
           seqEl.classList.add('zseq--on'); seqEl.textContent = i+1;
