@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.16';
+const CARD_VERSION = '2.9.17';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -907,6 +907,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       r.getElementById('cfg-btn').classList.toggle('cfg-btn--active', this._showConfig);
       r.getElementById('cfg-panel').classList.toggle('cfg-panel--open', this._showConfig);
       if (this._showConfig) {
+        this._cfgSnapshot = JSON.stringify(this._cfg);
         this._renderConfigPanel();
         setTimeout(() => {
           const panel = this.shadowRoot.getElementById('cfg-panel');
@@ -1225,6 +1226,35 @@ class SprinklerDashCardV2 extends HTMLElement {
     closeBtn.style.cssText='padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#999);font-size:12px;font-weight:600;cursor:pointer';
     closeBtn.textContent='Close';
     closeBtn.addEventListener('click',()=>{
+      // check for unsaved changes by comparing current panel values to snapshot
+      const _snap = this._cfgSnapshot ? JSON.parse(this._cfgSnapshot) : null;
+      let dirty = false;
+      if (_snap) {
+        // check text inputs against snapshot
+        panel.querySelectorAll('input[data-cfg-key]').forEach(inp => {
+          const key = inp.dataset.cfgKey;
+          if (inp.type === 'number' && Math.abs(parseFloat(inp.value) - parseFloat(_snap[key]||0)) > 0.01) dirty = true;
+          if (inp.type === 'text' && inp.value !== (_snap[key]||'')) dirty = true;
+        });
+        // check zone names/entities
+        panel.querySelectorAll('input[data-zone-name-idx]').forEach(inp => {
+          const idx = parseInt(inp.dataset.zoneNameIdx);
+          if (inp.value !== (_snap.zones?.[idx]?.name||'')) dirty = true;
+        });
+      }
+      if (dirty) {
+        closeBtn.textContent = '⚠ Unsaved changes — Save first or tap again to discard';
+        closeBtn.style.color = '#ffb43c';
+        closeBtn.style.borderColor = 'rgba(255,180,60,0.4)';
+        closeBtn._warnShown = true;
+        setTimeout(() => {
+          closeBtn.textContent = 'Close';
+          closeBtn.style.color = '';
+          closeBtn.style.borderColor = '';
+          closeBtn._warnShown = false;
+        }, 3000);
+        return;
+      }
       this._showConfig=false;
       this.shadowRoot.getElementById('cfg-btn').classList.remove('cfg-btn--active');
       panel.classList.remove('cfg-panel--open');
