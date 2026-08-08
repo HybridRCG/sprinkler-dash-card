@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.17';
+const CARD_VERSION = '2.9.18';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -519,12 +519,12 @@ class SprinklerDashCardV2 extends HTMLElement {
     .hbtn--stop{background:rgba(210,45,45,0.9);color:#fff}
     .hbtn--start{background:rgba(255,255,255,0.92);color:#0a5c45}
     .zones{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px}
-    .zone{border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);padding:8px 9px 7px;position:relative;overflow:hidden;transition:border-color .2s,background .2s}
-    .zone::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:rgba(255,255,255,0.06);transition:background .2s}
-    .zone--on{background:rgba(26,138,100,0.1);border-color:rgba(77,196,154,0.35)}
+    .zone{border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);padding:8px 9px 7px;position:relative;overflow:hidden;transition:border-color .6s ease,background .6s ease,box-shadow .6s ease}
+    .zone::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:rgba(255,255,255,0.06);transition:background .6s ease}
+    .zone--on{background:rgba(26,138,100,0.1);border-color:rgba(77,196,154,0.35);box-shadow:0 0 12px rgba(77,196,154,0.15)}
     .zone--on::before{background:linear-gradient(90deg,#1a8a64,#4dc49a)}
     .ztop{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-    .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s}
+    .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .6s ease,color .6s ease,border-color .6s ease}
     .zseq--on{background:rgba(26,138,100,0.4);color:#4dc49a;border-color:rgba(77,196,154,0.4)}
     .zseq--done{background:rgba(26,138,100,0.25);color:#4dc49a;border-color:rgba(77,196,154,0.5)}
     .zseq--manual{background:rgba(40,80,200,0.35);color:#7eb4ff;border-color:rgba(80,140,255,0.6)}
@@ -560,7 +560,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zexpand-sched-cb{width:16px;height:16px;accent-color:#1a8a64;cursor:pointer}
     .zseq--queued{background:rgba(255,180,60,0.1);color:rgba(255,180,60,0.6);border-color:rgba(255,180,60,0.2)}
     .zname{flex:1;font-size:13px;font-weight:700;color:var(--primary-text-color,#f0f0f0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .zone--on .zname{color:#7de8c0}
+    .zone--on .zname{color:#7de8c0} .zname{transition:color .6s ease}
     .zone--disabled .zname{color:var(--secondary-text-color,#555);text-decoration:line-through}
     .ztoggle{position:relative;width:32px;height:18px;border-radius:9px;background:rgba(255,255,255,0.12);cursor:pointer;flex-shrink:0;transition:background .25s}
     .ztoggle--on{background:#1a8a64}
@@ -592,7 +592,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     .lastrun-section-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#555);font-weight:700;margin-bottom:4px}
     .lastrun-dur{color:var(--secondary-text-color,#666);font-size:11px}
     .zprog-track{height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;margin-bottom:4px}
-    .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width .9s linear}
+    .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width 1.2s ease}
     .zstat{font-size:11px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:14px;margin-bottom:5px}
     .zstat--on{color:#4dc49a}
     .pulse{display:inline-block;width:5px;height:5px;border-radius:50%;background:#4dc49a;flex-shrink:0;animation:pulse 1.2s ease-in-out infinite}
