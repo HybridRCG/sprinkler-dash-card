@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.19';
+const CARD_VERSION = '2.9.20';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -2067,7 +2067,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     if(nextEl&&attrs.next_trigger){
       const d=new Date(attrs.next_trigger),now=new Date(),diff=d-now;
       const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000);
-      const timeStr=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+      const timeStr=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false});
       const todayDate=now.toDateString(), tomorrowDate=new Date(now.getTime()+86400000).toDateString();
       let label;
       const days = Math.floor(diff/86400000);
