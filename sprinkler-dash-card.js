@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.23';
+const CARD_VERSION = '2.9.24';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -628,8 +628,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     .sched-time-sep{font-size:16px;font-weight:700;color:var(--primary-text-color,#f0f0f0)}
     .sched-time-ok{background:#1a8a64;border:none;border-radius:5px;color:#fff;font-size:12px;font-weight:700;padding:4px 7px;cursor:pointer}
     .sched-time-x{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:var(--secondary-text-color,#aaa);font-size:12px;font-weight:600;padding:4px 6px;cursor:pointer}
-    .sched-next{font-size:11px;color:var(--secondary-text-color,#666)}
-    .sched-next--on{color:#4dc49a}
+    .sched-next{font-size:12px;color:#fff;font-weight:700}
+    .sched-next--on{color:#fff}
     /* CONFIG PANEL — no overflow:hidden so dropdowns escape */
     .cfg-panel{display:none;border-top:1px solid rgba(255,255,255,0.06);flex-direction:column;max-height:70vh}
     .cfg-panel--open{display:flex}
@@ -2078,7 +2078,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       else if(d.toDateString()===todayDate) label='Tonight in '+h+'h '+(m>0?m+'m':'');
       else if(d.toDateString()===tomorrowDate) label='Tomorrow in '+h+'h '+(m>0?m+'m':'');
       else label=dayName+' in '+days+'d '+Math.floor((diff%86400000)/3600000)+'h '+(m>0?m+'m':'');
-      nextEl.textContent=isOn?'next: '+label:'disabled';
+      nextEl.textContent=isOn?'Next: '+label:'disabled';
       nextEl.className='sched-next'+(isOn?' sched-next--on':'');
     }
   }
