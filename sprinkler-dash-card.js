@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.21';
+const CARD_VERSION = '2.9.22';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -2076,7 +2076,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       else if(h<1) label='in '+m+'m';
       else if(h<2) label='in '+h+'h '+(m>0?m+'m':'');
       else if(d.toDateString()===todayDate) label='Tonight '+timeStr+' (in '+h+'h '+(m>0?m+'m':'')+')'
-      else if(d.toDateString()===tomorrowDate) label='Tomorrow '+timeStr+' (in '+h+'h)';
+      else if(d.toDateString()===tomorrowDate) label='Tomorrow '+timeStr+' (in '+h+'h '+(m>0?m+'m':'')+')';
       else label=dayName+' '+timeStr+' (in '+days+'d '+Math.floor((diff%86400000)/3600000)+'h)';
       nextEl.textContent=isOn?'next: '+label:'disabled';
       nextEl.className='sched-next'+(isOn?' sched-next--on':'');
