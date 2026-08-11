@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.26';
+const CARD_VERSION = '2.9.27';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1883,6 +1883,17 @@ class SprinklerDashCardV2 extends HTMLElement {
     const slots = this._cfg.meta_slots || DEFAULT_META_SLOTS;
     const jojoLow = parseFloat(this._cfg.jojo_low_pct)||35;
     const rainThresh = parseFloat(this._cfg.rain_threshold)||5;
+
+    // update title when postponed due to rain
+    const titleEl = this.shadowRoot.querySelector('.hdr-title h2');
+    if (titleEl) {
+      const schedE = this._cfg.schedule_entity;
+      const schedOff = schedE && this._hass.states[schedE]?.state === 'off';
+      const rainVal = this._cfg.rain_sensor ? parseFloat(this._hass.states[this._cfg.rain_sensor]?.state||0) : 0;
+      const rainPostponed = schedOff && rainVal >= rainThresh;
+      titleEl.textContent = rainPostponed ? 'Sprinklers — Postponed' : 'Sprinklers';
+      titleEl.style.color = rainPostponed ? '#7eb4ff' : '';
+    }
     const activeSlots = slots.filter(s=>s.enabled!==false);
 
     // set grid class based on count of enabled slots
