@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.27';
+const CARD_VERSION = '2.9.28';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -162,12 +162,15 @@ class SprinklerDashCardV2 extends HTMLElement {
         const rainThresh = this._cfg.rain_threshold || 5;
         // if schedule is off AND rain is now below threshold AND was disabled by rain rule
         if (schedState?.state === 'off' && rainVal < rainThresh) {
-          const disabledAt = this._rainDisabledAt;
+          const map = this._manualRunMap ? this._manualRunMap() : {};
+          const persistedAt = map['_rain_disabled_at'];
+          const disabledAt = this._rainDisabledAt || (persistedAt ? new Date(persistedAt).getTime() : null);
           if (disabledAt) {
             const hoursElapsed = (Date.now() - disabledAt) / 3600000;
             const restoreHours = this._cfg.rain_restore_hours || 48;
             if (hoursElapsed >= restoreHours) {
               this._rainDisabledAt = null;
+              this._clearRainDisabledAt();
               this._svc('switch', 'turn_on', {entity_id: schedE});
             }
           }
@@ -197,6 +200,24 @@ class SprinklerDashCardV2 extends HTMLElement {
   _isZoneSkipped(z) {
     if (!z.sw) return false;
     return this._skipList().includes(z.sw);
+  }
+
+  _persistRainDisabledAt() {
+    const e = 'input_text.sprinkler_manual_runs';
+    if (!this._hass.states[e]) return;
+    const map = this._manualRunMap();
+    map['_rain_disabled_at'] = new Date().toISOString();
+    const val = JSON.stringify(map);
+    if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
+  }
+
+  _clearRainDisabledAt() {
+    const e = 'input_text.sprinkler_manual_runs';
+    if (!this._hass.states[e]) return;
+    const map = this._manualRunMap();
+    delete map['_rain_disabled_at'];
+    const val = JSON.stringify(map);
+    if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
   }
 
   _toggleSkip(z) {
@@ -1937,7 +1958,8 @@ class SprinklerDashCardV2 extends HTMLElement {
               warn=true;
               if (this._cfg.schedule_entity&&this._hass.states[this._cfg.schedule_entity]?.state==='on') {
                 this._svc('switch','turn_off',{entity_id:this._cfg.schedule_entity});
-                this._rainDisabledAt = Date.now(); // record when rain disabled the schedule
+                this._rainDisabledAt = Date.now();
+                this._persistRainDisabledAt();
               }
             }
           }
