@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.28';
+const CARD_VERSION = '2.9.29';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1956,8 +1956,12 @@ class SprinklerDashCardV2 extends HTMLElement {
             const numVal=parseFloat(val1)||0;
             if (numVal>=rainThresh && this._cfg.rules?.rain_disable_schedule!==false) {
               warn=true;
-              if (this._cfg.schedule_entity&&this._hass.states[this._cfg.schedule_entity]?.state==='on') {
-                this._svc('switch','turn_off',{entity_id:this._cfg.schedule_entity});
+              if (this._cfg.schedule_entity) {
+                const schedSt = this._hass.states[this._cfg.schedule_entity]?.state;
+                if (schedSt === 'on') {
+                  this._svc('switch','turn_off',{entity_id:this._cfg.schedule_entity});
+                }
+                // always reset the timer when rain exceeds threshold (even if schedule already off)
                 this._rainDisabledAt = Date.now();
                 this._persistRainDisabledAt();
               }
@@ -2113,7 +2117,31 @@ class SprinklerDashCardV2 extends HTMLElement {
       else label=dayName+' in '+days+'d '+Math.floor((diff%86400000)/3600000)+'h '+(m>0?m+'m':'');
       const rainVal = this._cfg.rain_sensor ? parseFloat(this._hass.states[this._cfg.rain_sensor]?.state||0) : 0;
       const rainThresh = this._cfg.rain_threshold || 5;
-      const disabledMsg = rainVal >= rainThresh ? 'Postponed — rain detected 🌧' : 'Schedule disabled';
+      let disabledMsg = 'Schedule disabled';
+      if (!isOn && rainVal >= rainThresh) {
+        // still raining — reset the timer
+        const map = this._manualRunMap ? this._manualRunMap() : {};
+        const existingAt = map['_rain_disabled_at'];
+        if (!existingAt) { this._persistRainDisabledAt && this._persistRainDisabledAt(); }
+        disabledMsg = 'Postponed — rain detected 🌧';
+      } else if (!isOn) {
+        // rain stopped — show countdown to restore
+        const map = this._manualRunMap ? this._manualRunMap() : {};
+        const disabledAtStr = map['_rain_disabled_at'];
+        if (disabledAtStr) {
+          const disabledAt = new Date(disabledAtStr).getTime();
+          const restoreHours = this._cfg.rain_restore_hours || 48;
+          const restoreAt = disabledAt + restoreHours * 3600000;
+          const remaining = restoreAt - Date.now();
+          if (remaining > 0) {
+            const rh = Math.floor(remaining / 3600000);
+            const rm = Math.floor((remaining % 3600000) / 60000);
+            disabledMsg = rh > 0 ? `Resumes in ${rh}h ${rm}m 🌤` : `Resumes in ${rm}m 🌤`;
+          } else {
+            disabledMsg = 'Resuming soon... 🌤';
+          }
+        }
+      }
       nextEl.textContent=isOn?'Next: '+label:disabledMsg;
       nextEl.className='sched-next'+(isOn?' sched-next--on':'');
     }
