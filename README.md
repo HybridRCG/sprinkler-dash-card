@@ -68,7 +68,8 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 
 **Automation rules**
 - Rain auto-disable — schedule turns off when rain exceeds configured mm threshold (slot turns yellow)
-- Rain auto-restore — schedule re-enables automatically after configurable hours (default 48h)
+- Rain auto-restore — seasonal auto-adjust: 24h summer (Oct–Mar), 48h winter (Apr–Sep), with manual override and reset buttons
+- Postpone countdown — shows "Resumes in Xh Xm" with rain/clear icon and which scheduled day will be skipped
 - Jojo/tank low-level shutoff — all valves close immediately when tank drops below configured % (slot turns red)
 - Confirmation popups — optional confirmation before any zone or schedule action
 
@@ -215,6 +216,21 @@ Tap **↻** in the Last Run header to refresh the data after a schedule complete
 
 | Version | Changes |
 |---|---|
+| v2.9.35 | Seasonal rain restore — auto summer/winter hours, manual override, reset buttons |
+| v2.9.34 | Skip day check — only shows skipped day if it is a scheduled run day |
+| v2.9.33 | Rain postpone countdown shows which scheduled day will be skipped |
+| v2.9.30 | Rain postpone countdown — Resumes in Xh Xm with live icon |
+| v2.9.28 | Persistent rain auto-restore across HA restarts |
+| v2.9.27 | Title shows Sprinklers — Postponed in blue when rain disables schedule |
+| v2.9.26 | Friendly rain postponed message in schedule section |
+| v2.9.23 | Countdown cleaner — relative time with day context |
+| v2.9.18 | Smoother zone transition animations |
+| v2.9.17 | Warn on unsaved settings changes before close |
+| v2.9.16 | Scroll to settings panel on small screens |
+| v2.9.15 | Configurable tick mark duration in settings |
+| v2.9.14 | Last Run auto-refreshes after schedule completes |
+| v2.9.11 | Fix false tick marks after HA restart |
+| v2.9.4 | Zone expand popup; blue badge 8h after manual run |
 | v2.9.9 | Manual zone timer persists across card reloads via stored stop time; tile toggle uses confirmWithTimer |
 | v2.9.8 | Removed auto-stop from _updateZones — was cancelling scheduled runs |
 | v2.9.7 | Zone expand popup uses proper manual timer with auto-stop; auto-stop buffer extended 2 min |
