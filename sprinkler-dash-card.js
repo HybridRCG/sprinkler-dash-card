@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.33';
+const CARD_VERSION = '2.9.34';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -2141,11 +2141,15 @@ class SprinklerDashCardV2 extends HTMLElement {
             // find next scheduled run after restore time
             const restoreDate = new Date(restoreAt);
             const nextTrigger = attrs && attrs.next_trigger ? new Date(attrs.next_trigger) : null;
+            const scheduledDays = attrs.weekdays || [];
             let nextRunStr = '';
             if (nextTrigger && nextTrigger < restoreDate) {
-              // next trigger is before restore — find the one after
               const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-              nextRunStr = ' — skips ' + dayNames[nextTrigger.getDay()];
+              const dayShort = ['sun','mon','tue','wed','thu','fri','sat'];
+              const skipDay = nextTrigger.getDay();
+              if (scheduledDays.includes(dayShort[skipDay])) {
+                nextRunStr = ' — skips ' + dayNames[skipDay];
+              }
             }
             disabledMsg = rh > 0 ? `Resumes in ${rh}h ${rm}m ${rainIcon}${nextRunStr}` : `Resumes in ${rm}m ${rainIcon}${nextRunStr}`;
           } else {
