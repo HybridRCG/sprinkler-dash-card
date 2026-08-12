@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.34';
+const CARD_VERSION = '2.9.35';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -31,6 +31,9 @@ const DEFAULT_CONFIG = {
   jojo_low_pct: 35,
   meta_slots: JSON.parse(JSON.stringify(DEFAULT_META_SLOTS)),
   rain_restore_hours: 48,
+  rain_restore_summer: 24,
+  rain_restore_winter: 48,
+  rain_restore_override: false,
   rain_status_sensor: '',
   tick_hours: 3,
   rules: {
@@ -150,6 +153,16 @@ class SprinklerDashCardV2 extends HTMLElement {
             if (btn) { btn.style.boxShadow='0 0 0 2px #4dc49a'; setTimeout(()=>{ if(btn) btn.style.boxShadow=''; }, 5000); }
           }
         }, 4000);
+      }
+    }
+
+    // seasonal rain restore auto-adjust
+    if (!this._cfg.rain_restore_override) {
+      const month = new Date().getMonth(); // 0=Jan
+      const isSummer = month >= 9 || month <= 2; // Oct-Mar
+      const seasonal = isSummer ? (this._cfg.rain_restore_summer||24) : (this._cfg.rain_restore_winter||48);
+      if (this._cfg.rain_restore_hours !== seasonal) {
+        this._cfg.rain_restore_hours = seasonal;
       }
     }
 
@@ -1408,21 +1421,85 @@ class SprinklerDashCardV2 extends HTMLElement {
     const rtHint=document.createElement('span'); rtHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rtHint.textContent='mm → disable sched';
     rtRow.append(rtLbl,rtInp,rtHint); slist.appendChild(rtRow);
 
-    // rain restore hours
-    const rrRow=document.createElement('div'); rrRow.className='cfg-field-row';
-    const rrLbl=document.createElement('label'); rrLbl.className='cfg-field-lbl'; rrLbl.textContent='Rain restore';
-    const rrInp=document.createElement('input'); rrInp.type='number'; rrInp.className='cfg-field-input';
-    rrInp.value=this._cfg.rain_restore_hours||48; rrInp.placeholder='48'; rrInp.min=1; rrInp.max=168;
-    rrInp.dataset.cfgKey='rain_restore_hours';
-    const rrHint=document.createElement('span'); rrHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rrHint.textContent='h → re-enable sched';
-    rrRow.append(rrLbl,rrInp,rrHint); slist.appendChild(rrRow);
+    // seasonal rain restore
+    const month = new Date().getMonth();
+    const isSummer = month >= 9 || month <= 2;
+    const seasonLabel = isSummer ? '☀️ Summer (Oct–Mar)' : '❄️ Winter (Apr–Sep)';
+    const isOverride = this._cfg.rain_restore_override === true;
+
+    const rrSection = document.createElement('div');
+    rrSection.style.cssText='border:1px solid rgba(255,255,255,0.07);border-radius:7px;padding:7px 8px;margin-bottom:4px;background:rgba(255,255,255,0.02)';
+
+    const rrTitle = document.createElement('div');
+    rrTitle.style.cssText='font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#4dc49a;margin-bottom:6px';
+    rrTitle.textContent='Rain restore — ' + seasonLabel + (isOverride ? ' (manual override)' : ' (auto)');
+    rrSection.appendChild(rrTitle);
+
+    // Summer hours
+    const rsmRow=document.createElement('div'); rsmRow.className='cfg-field-row'; rsmRow.style.marginBottom='4px';
+    const rsLbl=document.createElement('label'); rsLbl.className='cfg-field-lbl'; rsLbl.textContent='☀️ Summer';
+    const rsInp=document.createElement('input'); rsInp.type='number'; rsInp.className='cfg-field-input';
+    rsInp.value=this._cfg.rain_restore_summer||24; rsInp.placeholder='24'; rsInp.min=1; rsInp.max=168;
+    rsInp.dataset.cfgKey='rain_restore_summer';
+    const rsHint=document.createElement('span'); rsHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rsHint.textContent='h (Oct–Mar)';
+    rsmRow.append(rsLbl,rsInp,rsHint); rrSection.appendChild(rsmRow);
+
+    // Winter hours
+    const rwRow=document.createElement('div'); rwRow.className='cfg-field-row'; rwRow.style.marginBottom='4px';
+    const rwLbl=document.createElement('label'); rwLbl.className='cfg-field-lbl'; rwLbl.textContent='❄️ Winter';
+    const rwInp=document.createElement('input'); rwInp.type='number'; rwInp.className='cfg-field-input';
+    rwInp.value=this._cfg.rain_restore_winter||48; rwInp.placeholder='48'; rwInp.min=1; rwInp.max=168;
+    rwInp.dataset.cfgKey='rain_restore_winter';
+    const rwHint=document.createElement('span'); rwHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rwHint.textContent='h (Apr–Sep)';
+    rwRow.append(rwLbl,rwInp,rwHint); rrSection.appendChild(rwRow);
+
+    // Override hours
+    const roRow=document.createElement('div'); roRow.className='cfg-field-row'; roRow.style.marginBottom='6px';
+    const roLbl=document.createElement('label'); roLbl.className='cfg-field-lbl'; roLbl.textContent='Override';
+    const roInp=document.createElement('input'); roInp.type='number'; roInp.className='cfg-field-input';
+    roInp.value=this._cfg.rain_restore_hours||48; roInp.placeholder='48'; roInp.min=1; roInp.max=168;
+    roInp.dataset.cfgKey='rain_restore_hours';
+    roInp.style.opacity = isOverride ? '1' : '0.4';
+    const roHint=document.createElement('span'); roHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; roHint.textContent='h (manual)';
+    roInp.addEventListener('input', () => {
+      this._cfg.rain_restore_override = true;
+      this._cfg.rain_restore_hours = parseFloat(roInp.value)||48;
+      this._saveConfig({rain_restore_override:true, rain_restore_hours:this._cfg.rain_restore_hours});
+      roInp.style.opacity='1'; rrTitle.textContent='Rain restore — (manual override)';
+    });
+    roRow.append(roLbl,roInp,roHint); rrSection.appendChild(roRow);
+
+    // Reset buttons
+    const btnRow=document.createElement('div'); btnRow.style.cssText='display:grid;grid-template-columns:1fr 1fr;gap:5px';
+    const btnS=document.createElement('button');
+    btnS.style.cssText='padding:5px;border-radius:6px;border:1px solid rgba(255,180,60,0.3);background:rgba(255,180,60,0.1);color:#ffb43c;font-size:11px;font-weight:600;cursor:pointer';
+    btnS.textContent='↺ Reset Summer';
+    btnS.addEventListener('click',()=>{
+      const h = parseFloat(rsInp.value)||24;
+      roInp.value=h; roInp.style.opacity='0.4';
+      this._cfg.rain_restore_override=false; this._cfg.rain_restore_hours=h;
+      this._saveConfig({rain_restore_override:false,rain_restore_hours:h});
+      rrTitle.textContent='Rain restore — ☀️ Summer (Oct–Mar) (auto)';
+    });
+    const btnW=document.createElement('button');
+    btnW.style.cssText='padding:5px;border-radius:6px;border:1px solid rgba(100,150,255,0.3);background:rgba(100,150,255,0.1);color:#7eb4ff;font-size:11px;font-weight:600;cursor:pointer';
+    btnW.textContent='↺ Reset Winter';
+    btnW.addEventListener('click',()=>{
+      const h = parseFloat(rwInp.value)||48;
+      roInp.value=h; roInp.style.opacity='0.4';
+      this._cfg.rain_restore_override=false; this._cfg.rain_restore_hours=h;
+      this._saveConfig({rain_restore_override:false,rain_restore_hours:h});
+      rrTitle.textContent='Rain restore — ❄️ Winter (Apr–Sep) (auto)';
+    });
+    btnRow.append(btnS,btnW); rrSection.appendChild(btnRow);
+    slist.appendChild(rrSection);
 
     // rain status sensor
-    const rsRow=document.createElement('div'); rsRow.className='cfg-field-row';
-    const rsLbl=document.createElement('label'); rsLbl.className='cfg-field-lbl'; rsLbl.textContent='Rain status';
-    const rsWrap=this._makeEntityInput(this._cfg.rain_status_sensor||'',(val)=>{ this._saveConfig({rain_status_sensor:val}); });
-    const rsHint=document.createElement('span'); rsHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rsHint.textContent='sensor (Dry=clear)';
-    rsRow.append(rsLbl,rsWrap,rsHint); slist.appendChild(rsRow);
+    const rstRow=document.createElement('div'); rstRow.className='cfg-field-row';
+    const rstLbl=document.createElement('label'); rstLbl.className='cfg-field-lbl'; rstLbl.textContent='Rain status';
+    const rstWrap=this._makeEntityInput(this._cfg.rain_status_sensor||'',(val)=>{ this._saveConfig({rain_status_sensor:val}); });
+    const rstHint=document.createElement('span'); rstHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rstHint.textContent='sensor (Dry=clear)';
+    rstRow.append(rstLbl,rstWrap,rstHint); slist.appendChild(rstRow);
 
     // tick mark duration
     const tkRow=document.createElement('div'); tkRow.className='cfg-field-row';
@@ -1586,6 +1663,10 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (rtEl) this._cfg.rain_threshold=parseFloat(rtEl.value)||5;
     const rrEl=panel.querySelector('[data-cfg-key="rain_restore_hours"]');
     if (rrEl) this._cfg.rain_restore_hours=parseFloat(rrEl.value)||48;
+    const rsEl=panel.querySelector('[data-cfg-key="rain_restore_summer"]');
+    if (rsEl) this._cfg.rain_restore_summer=parseFloat(rsEl.value)||24;
+    const rwEl=panel.querySelector('[data-cfg-key="rain_restore_winter"]');
+    if (rwEl) this._cfg.rain_restore_winter=parseFloat(rwEl.value)||48;
     const tkEl=panel.querySelector('[data-cfg-key="tick_hours"]');
     if (tkEl) this._cfg.tick_hours=parseFloat(tkEl.value)||3;
     const jlEl=panel.querySelector('[data-cfg-key="jojo_low_pct"]');
