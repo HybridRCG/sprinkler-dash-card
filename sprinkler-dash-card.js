@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.31';
+const CARD_VERSION = '2.9.32';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -2137,15 +2137,7 @@ class SprinklerDashCardV2 extends HTMLElement {
           if (remaining > 0) {
             const rh = Math.floor(remaining / 3600000);
             const rm = Math.floor((remaining % 3600000) / 60000);
-            // use rain status sensor if configured, otherwise fall back to rain sensor value
-            const rainStatusE = this._cfg.rain_status_sensor;
-            let isRaining;
-            if (rainStatusE && this._hass.states[rainStatusE]) {
-              isRaining = this._hass.states[rainStatusE].state.toLowerCase() !== 'dry';
-            } else {
-              isRaining = rainVal >= rainThresh;
-            }
-            const rainIcon = isRaining ? '🌧' : '🌤';
+            const rainIcon = rainVal >= rainThresh ? '🌧' : '🌤';
             disabledMsg = rh > 0 ? `Resumes in ${rh}h ${rm}m ${rainIcon}` : `Resumes in ${rm}m ${rainIcon}`;
           } else {
             disabledMsg = 'Resuming soon... 🌤';
