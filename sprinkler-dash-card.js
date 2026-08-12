@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.30';
+const CARD_VERSION = '2.9.31';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -31,6 +31,7 @@ const DEFAULT_CONFIG = {
   jojo_low_pct: 35,
   meta_slots: JSON.parse(JSON.stringify(DEFAULT_META_SLOTS)),
   rain_restore_hours: 48,
+  rain_status_sensor: '',
   tick_hours: 3,
   rules: {
     rain_disable_schedule: true,
@@ -1416,6 +1417,13 @@ class SprinklerDashCardV2 extends HTMLElement {
     const rrHint=document.createElement('span'); rrHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rrHint.textContent='h → re-enable sched';
     rrRow.append(rrLbl,rrInp,rrHint); slist.appendChild(rrRow);
 
+    // rain status sensor
+    const rsRow=document.createElement('div'); rsRow.className='cfg-field-row';
+    const rsLbl=document.createElement('label'); rsLbl.className='cfg-field-lbl'; rsLbl.textContent='Rain status';
+    const rsWrap=this._makeEntityInput(this._cfg.rain_status_sensor||'',(val)=>{ this._saveConfig({rain_status_sensor:val}); });
+    const rsHint=document.createElement('span'); rsHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rsHint.textContent='sensor (Dry=clear)';
+    rsRow.append(rsLbl,rsWrap,rsHint); slist.appendChild(rsRow);
+
     // tick mark duration
     const tkRow=document.createElement('div'); tkRow.className='cfg-field-row';
     const tkLbl=document.createElement('label'); tkLbl.className='cfg-field-lbl'; tkLbl.textContent='Tick duration';
@@ -2129,7 +2137,15 @@ class SprinklerDashCardV2 extends HTMLElement {
           if (remaining > 0) {
             const rh = Math.floor(remaining / 3600000);
             const rm = Math.floor((remaining % 3600000) / 60000);
-            const rainIcon = rainVal >= rainThresh ? '🌧' : '🌤';
+            // use rain status sensor if configured, otherwise fall back to rain sensor value
+            const rainStatusE = this._cfg.rain_status_sensor;
+            let isRaining;
+            if (rainStatusE && this._hass.states[rainStatusE]) {
+              isRaining = this._hass.states[rainStatusE].state.toLowerCase() !== 'dry';
+            } else {
+              isRaining = rainVal >= rainThresh;
+            }
+            const rainIcon = isRaining ? '🌧' : '🌤';
             disabledMsg = rh > 0 ? `Resumes in ${rh}h ${rm}m ${rainIcon}` : `Resumes in ${rm}m ${rainIcon}`;
           } else {
             disabledMsg = 'Resuming soon... 🌤';
