@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.36';
+const CARD_VERSION = '2.9.37';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -2000,9 +2000,31 @@ class SprinklerDashCardV2 extends HTMLElement {
       const schedE = this._cfg.schedule_entity;
       const schedOff = schedE && this._hass.states[schedE]?.state === 'off';
       const rainVal = this._cfg.rain_sensor ? parseFloat(this._hass.states[this._cfg.rain_sensor]?.state||0) : 0;
-      const rainPostponed = schedOff && rainVal >= rainThresh;
-      titleEl.textContent = rainPostponed ? 'Sprinklers — Postponed' : 'Sprinklers';
-      titleEl.style.color = rainPostponed ? '#7eb4ff' : '';
+      if (schedOff) {
+        const map2 = this._manualRunMap ? this._manualRunMap() : {};
+        const disabledAtStr2 = map2['_rain_disabled_at'];
+        if (disabledAtStr2) {
+          const disabledAt2 = new Date(disabledAtStr2).getTime();
+          const restoreHours2 = this._cfg.rain_restore_hours || 48;
+          const restoreAt2 = disabledAt2 + restoreHours2 * 3600000;
+          const remaining2 = restoreAt2 - Date.now();
+          if (remaining2 > 0) {
+            const rh2 = Math.floor(remaining2 / 3600000);
+            const rm2 = Math.floor((remaining2 % 3600000) / 60000);
+            const icon2 = rainVal >= rainThresh ? '🌧' : '🌤';
+            titleEl.textContent = rh2 > 0 ? `Sprinklers — Resumes in ${rh2}h ${rm2}m ${icon2}` : `Sprinklers — Resumes in ${rm2}m ${icon2}`;
+          } else {
+            titleEl.textContent = 'Sprinklers — Resuming soon 🌤';
+          }
+          titleEl.style.color = '#7eb4ff';
+        } else {
+          titleEl.textContent = 'Sprinklers';
+          titleEl.style.color = '';
+        }
+      } else {
+        titleEl.textContent = 'Sprinklers';
+        titleEl.style.color = '';
+      }
     }
     const activeSlots = slots.filter(s=>s.enabled!==false);
 
