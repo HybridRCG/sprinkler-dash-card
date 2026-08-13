@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.35';
+const CARD_VERSION = '2.9.36';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -265,7 +265,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     map[sw] = new Date().toISOString();
     // clear any pending stop time
     delete map[sw+'_stop'];
-    Object.keys(map).forEach(k => { if (k.endsWith('_stop')) return; if ((Date.now() - new Date(map[k]).getTime()) > 24*3600000) delete map[k]; });
+    Object.keys(map).forEach(k => { if (k.endsWith('_stop') || k === '_rain_disabled_at') return; if ((Date.now() - new Date(map[k]).getTime()) > 24*3600000) delete map[k]; });
     const val = JSON.stringify(map);
     if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
   }
@@ -276,7 +276,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     const map = this._manualRunMap();
     // store expected stop time so card can recover after reload
     map[sw+'_stop'] = new Date(Date.now() + durMins*60000).toISOString();
-    Object.keys(map).forEach(k => { if (k.endsWith('_stop')) return; if ((Date.now() - new Date(map[k]).getTime()) > 24*3600000) delete map[k]; });
+    Object.keys(map).forEach(k => { if (k.endsWith('_stop') || k === '_rain_disabled_at') return; if ((Date.now() - new Date(map[k]).getTime()) > 24*3600000) delete map[k]; });
     const val = JSON.stringify(map);
     if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
   }
