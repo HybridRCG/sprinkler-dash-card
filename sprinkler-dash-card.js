@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.38';
+const CARD_VERSION = '2.9.39';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -186,6 +186,16 @@ class SprinklerDashCardV2 extends HTMLElement {
               this._rainDisabledAt = null;
               this._clearRainDisabledAt();
               this._svc('switch', 'turn_on', {entity_id: schedE});
+            }
+          } else {
+            // no timestamp found + rain below threshold = safe to re-enable immediately
+            if (!this._restoreDebounce) {
+              this._restoreDebounce = setTimeout(() => {
+                this._restoreDebounce = null;
+                if (this._hass.states[schedE]?.state === 'off') {
+                  this._svc('switch', 'turn_on', {entity_id: schedE});
+                }
+              }, 5000);
             }
           }
         }
