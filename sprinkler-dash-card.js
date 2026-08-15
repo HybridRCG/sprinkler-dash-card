@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.39';
+const CARD_VERSION = '2.9.40';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -139,9 +139,8 @@ class SprinklerDashCardV2 extends HTMLElement {
         stopBtn.style.display = running ? '' : 'none';
         startBtn.style.display = running ? 'none' : '';
       }
-      // record last run when script finishes
+      // auto-refresh Last Run popup when script finishes (automation handles actual logging)
       if (prevScriptState === 'on' && scriptState === 'off') {
-        this._recordLastRun();
         // auto-refresh Last Run popup after 4s (allows automation to write helper first)
         setTimeout(() => {
           const modal = this.shadowRoot?.getElementById('lastrun-modal');
