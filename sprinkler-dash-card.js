@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.46';
+const CARD_VERSION = '2.9.47';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1908,13 +1908,10 @@ class SprinklerDashCardV2 extends HTMLElement {
   _toggleOneOff() {
     this._cfg.oneoff_enabled = !this._cfg.oneoff_enabled;
     if (this._cfg.oneoff_enabled) {
-      // always reset to now+5min when toggling on (clear stale past datetimes)
-      const existing = this._cfg.oneoff_datetime ? new Date(this._cfg.oneoff_datetime) : null;
-      if (!existing || existing <= new Date()) {
-        const def = new Date(Date.now() + 5*60000);
-        const pad = n => String(n).padStart(2,'0');
-        this._cfg.oneoff_datetime = `${def.getFullYear()}-${pad(def.getMonth()+1)}-${pad(def.getDate())}T${pad(def.getHours())}:${pad(def.getMinutes())}`;
-      }
+      // always reset to now+5min when toggling on
+      const def = new Date(Date.now() + 5*60000);
+      const pad = n => String(n).padStart(2,'0');
+      this._cfg.oneoff_datetime = `${def.getFullYear()}-${pad(def.getMonth()+1)}-${pad(def.getDate())}T${pad(def.getHours())}:${pad(def.getMinutes())}`;
     }
     this._saveConfig({oneoff_enabled: this._cfg.oneoff_enabled, oneoff_datetime: this._cfg.oneoff_datetime});
     // force rebuild so date/time inputs reflect new defaults
