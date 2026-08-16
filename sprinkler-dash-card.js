@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.40';
+const CARD_VERSION = '2.9.41';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -42,6 +42,9 @@ const DEFAULT_CONFIG = {
     rain_auto_restore: true,
   },
   confirm_actions: true,
+  oneoff_zones: [],
+  oneoff_datetime: '',
+  oneoff_enabled: false,
 };
 
 class SprinklerDashCardV2 extends HTMLElement {
@@ -652,6 +655,22 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zdur-btn{width:38px;height:20px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;transition:background .15s;padding:0}
     .zdur-btn:hover{background:rgba(26,138,100,0.35);border-color:#1a8a64;color:#4dc49a}
     .zdur-btn:active{transform:scale(0.93)}
+    /* one-off scheduler */
+    .oneoff-wrap{margin:0 6px 6px;border-radius:9px;border:1px solid rgba(77,196,154,0.2);background:rgba(26,138,100,0.05);overflow:hidden}
+    .oneoff-hdr{display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(77,196,154,0.1);gap:8px}
+    .oneoff-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#4dc49a;flex:1}
+    .oneoff-body{padding:10px}
+    .oneoff-datetime{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+    .oneoff-num{width:36px;font-size:15px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:3px 2px;outline:none;text-align:center;-moz-appearance:textfield}
+    .oneoff-num::-webkit-inner-spin-button,.oneoff-num::-webkit-outer-spin-button{-webkit-appearance:none}
+    .oneoff-sep{font-size:14px;font-weight:700;color:var(--secondary-text-color,#666)}
+    .oneoff-ok{background:#1a8a64;border:none;border-radius:5px;color:#fff;font-size:12px;font-weight:700;padding:4px 8px;cursor:pointer}
+    .oneoff-zones{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px}
+    .oneoff-zone{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);font-size:12px;color:var(--primary-text-color,#eee);cursor:pointer}
+    .oneoff-zone input[type=checkbox]{accent-color:#1a8a64;cursor:pointer;flex-shrink:0}
+    .oneoff-zone-dur{width:32px;font-size:12px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid rgba(26,138,100,0.3);border-radius:4px;color:var(--primary-text-color,#eee);padding:2px 3px;outline:none;text-align:center;-moz-appearance:textfield;margin-left:auto}
+    .oneoff-zone-dur::-webkit-inner-spin-button,.oneoff-zone-dur::-webkit-outer-spin-button{-webkit-appearance:none}
+    .oneoff-status{font-size:11px;color:var(--secondary-text-color,#666);text-align:center;padding:4px 0}
     .sched-wrap{margin:0 6px 6px;border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);overflow:hidden}
     .sched-hdr{display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,0.05)}
     .sched-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--primary-text-color,#f0f0f0);flex:1}
@@ -805,6 +824,17 @@ class SprinklerDashCardV2 extends HTMLElement {
           <div class="sched-time" id="sched-time">--:--</div>
           <div class="sched-next" id="sched-next">—</div>
         </div>
+      </div>
+    </div>
+    <div class="oneoff-wrap" id="oneoff-wrap">
+      <div class="oneoff-hdr">
+        <span class="oneoff-title">📅 One-Off Run</span>
+        <div class="stoggle" id="oneoff-toggle"><div class="stoggle-thumb"></div></div>
+      </div>
+      <div class="oneoff-body" id="oneoff-body" style="display:none">
+        <div class="oneoff-datetime" id="oneoff-datetime"></div>
+        <div class="oneoff-zones" id="oneoff-zones"></div>
+        <div class="oneoff-status" id="oneoff-status"></div>
       </div>
     </div>
     <div class="lastrun-modal" id="lastrun-modal">
@@ -962,6 +992,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     r.getElementById('btn-start').addEventListener('click', () => this._startSchedule());
     r.getElementById('btn-stop-sched').addEventListener('click', () => this._stopSchedule());
     r.getElementById('btn-lastrun').addEventListener('click', () => this._showLastRun());
+    r.getElementById('oneoff-toggle').addEventListener('click', () => this._toggleOneOff());
     r.getElementById('lastrun-close').addEventListener('click', () => {
       r.getElementById('lastrun-modal').classList.remove('lastrun-modal--open');
     });
@@ -1860,6 +1891,156 @@ class SprinklerDashCardV2 extends HTMLElement {
     }, 500);
   }
 
+  _toggleOneOff() {
+    this._cfg.oneoff_enabled = !this._cfg.oneoff_enabled;
+    this._saveConfig({oneoff_enabled: this._cfg.oneoff_enabled});
+    this._buildOneOff();
+  }
+
+  _buildOneOff() {
+    const r = this.shadowRoot;
+    const tog = r.getElementById('oneoff-toggle');
+    const body = r.getElementById('oneoff-body');
+    const enabled = this._cfg.oneoff_enabled;
+    if (tog) { tog.className = 'stoggle' + (enabled ? ' stoggle--on' : ''); }
+    if (body) body.style.display = enabled ? '' : 'none';
+    if (!enabled) return;
+
+    // build datetime editor
+    const dtEl = r.getElementById('oneoff-datetime');
+    if (!dtEl || dtEl.dataset.built) return;
+    dtEl.dataset.built = '1';
+    dtEl.innerHTML = '';
+
+    const saved = this._cfg.oneoff_datetime || '';
+    const [datePart, timePart] = saved ? saved.split('T') : ['', ''];
+    const [syear, smonth, sday] = datePart ? datePart.split('-').map(Number) : [new Date().getFullYear(), new Date().getMonth()+1, new Date().getDate()+1];
+    const [shour, smin] = timePart ? timePart.split(':').map(Number) : [7, 30];
+
+    const mk = (min,max,val,ph) => {
+      const inp = document.createElement('input');
+      inp.type='number'; inp.className='oneoff-num'; inp.min=min; inp.max=max;
+      inp.value=String(val).padStart(2,'0'); inp.placeholder=ph;
+      inp.setAttribute('inputmode','numeric');
+      return inp;
+    };
+    const sep = (t) => { const s=document.createElement('span'); s.className='oneoff-sep'; s.textContent=t; return s; };
+
+    const dayInp=mk(1,31,sday,'DD'), monInp=mk(1,12,smonth,'MM'), yrInp=mk(2026,2099,syear,'YYYY');
+    yrInp.style.width='52px';
+    const hInp=mk(0,23,shour,'HH'), mInp=mk(0,59,smin,'MM');
+
+    const okBtn=document.createElement('button'); okBtn.className='oneoff-ok'; okBtn.textContent='✓ Set';
+    okBtn.addEventListener('click', () => {
+      const d=String(parseInt(dayInp.value)||1).padStart(2,'0');
+      const mo=String(parseInt(monInp.value)||1).padStart(2,'0');
+      const y=parseInt(yrInp.value)||new Date().getFullYear();
+      const h=String(Math.min(23,parseInt(hInp.value)||0)).padStart(2,'0');
+      const m=String(Math.min(59,parseInt(mInp.value)||0)).padStart(2,'0');
+      const dt=`${y}-${mo}-${d}T${h}:${m}`;
+      this._cfg.oneoff_datetime=dt;
+      this._saveConfig({oneoff_datetime:dt});
+      this._updateOneOffStatus();
+      okBtn.textContent='✓ Saved'; setTimeout(()=>okBtn.textContent='✓ Set',1500);
+    });
+
+    dtEl.append(dayInp,sep('/'),monInp,sep('/'),yrInp,sep(' '),hInp,sep(':'),mInp,okBtn);
+
+    // build zone checkboxes
+    const zonesEl = r.getElementById('oneoff-zones');
+    if (zonesEl) {
+      zonesEl.innerHTML='';
+      const savedZones = this._cfg.oneoff_zones || [];
+      this._activeZones().forEach((z,i) => {
+        if (!z.sw) return;
+        const saved = savedZones.find(sz=>sz.sw===z.sw);
+        const checked = saved ? true : false;
+        const dur = saved ? saved.dur : (z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||10)) : 10);
+
+        const wrap=document.createElement('label'); wrap.className='oneoff-zone';
+        const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=checked;
+        const nm=document.createElement('span'); nm.textContent=z.name; nm.style.flex='1';
+        const durInp=document.createElement('input'); durInp.type='number'; durInp.className='oneoff-zone-dur';
+        durInp.min=1; durInp.max=120; durInp.value=dur; durInp.setAttribute('inputmode','numeric');
+        durInp.title='Duration (min)';
+
+        const save = () => {
+          const zones = this._activeZones().filter(zz=>zz.sw).map((zz,ii) => {
+            const cbEl = zonesEl.querySelectorAll('input[type=checkbox]')[ii];
+            const dEl = zonesEl.querySelectorAll('.oneoff-zone-dur')[ii];
+            if (cbEl?.checked) return {sw:zz.sw, name:zz.name, dur:parseInt(dEl?.value||10)};
+            return null;
+          }).filter(Boolean);
+          this._cfg.oneoff_zones=zones;
+          this._saveConfig({oneoff_zones:zones});
+        };
+        cb.addEventListener('change', save);
+        durInp.addEventListener('change', save);
+        wrap.append(cb,nm,durInp);
+        zonesEl.appendChild(wrap);
+      });
+    }
+    this._updateOneOffStatus();
+  }
+
+  _updateOneOffStatus() {
+    const el = this.shadowRoot?.getElementById('oneoff-status');
+    if (!el) return;
+    const dt = this._cfg.oneoff_datetime;
+    const zones = this._cfg.oneoff_zones || [];
+    if (!dt) { el.textContent='Set a date and time above'; return; }
+    const d = new Date(dt);
+    const now = new Date();
+    if (d <= now) { el.textContent='⚠️ Date is in the past — set a future date'; el.style.color='#ffb43c'; return; }
+    el.style.color='';
+    const diff = d - now;
+    const h = Math.floor(diff/3600000), m = Math.floor((diff%3600000)/60000);
+    const days = Math.floor(diff/86400000);
+    const timeStr = dt.substring(11,16);
+    const dayStr = days>0 ? `in ${days}d ${h%24}h` : `in ${h}h ${m}m`;
+    el.textContent = zones.length ? `▶ Will run ${zones.length} zone(s) on ${d.toLocaleDateString([],{weekday:'short',day:'numeric',month:'short'})} at ${timeStr} (${dayStr})` : '⚠️ Select at least one zone';
+  }
+
+  _checkOneOffRun() {
+    if (!this._cfg.oneoff_enabled) return;
+    const dt = this._cfg.oneoff_datetime;
+    const zones = this._cfg.oneoff_zones || [];
+    if (!dt || !zones.length) return;
+    const scheduled = new Date(dt);
+    const now = new Date();
+    const diff = now - scheduled;
+    if (diff >= 0 && diff < 120000) { // within 2 min of scheduled time
+      if (this._oneoffFired) return;
+      this._oneoffFired = true;
+      this._runOneOff(zones);
+    } else if (diff < 0) {
+      this._oneoffFired = false; // reset for next time
+    }
+  }
+
+  _runOneOff(zones) {
+    // build and run a one-off script
+    const sequence = zones.map(z => ([
+      {action:'switch.turn_on', target:{entity_id:z.sw}},
+      {delay:{minutes:z.dur||10}},
+      {action:'switch.turn_off', target:{entity_id:z.sw}},
+    ])).flat();
+    this._hass.callService('script','run',{variables:{},sequence});
+    // disable after firing
+    this._cfg.oneoff_enabled = false;
+    this._saveConfig({oneoff_enabled:false});
+    // log it
+    const e='input_text.sprinkler_run_log_0';
+    if (this._hass.states[e]) {
+      const t=new Date().toISOString().substring(0,16);
+      const d=zones.map(z=>z.dur||10);
+      const existing=JSON.parse(this._hass.states[e].state||'[]');
+      const val=JSON.stringify([{t,d,s:[],oneoff:true},...existing].slice(0,4));
+      if(val.length<=255) this._svc('input_text','set_value',{entity_id:e,value:val});
+    }
+    this._buildOneOff();
+  }
+
   _showLastRun() {
     const r = this.shadowRoot;
     const body = r.getElementById('lastrun-body');
@@ -1994,7 +2175,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._svc('scheduler','edit',{entity_id:e,timeslots:[{start:ts+':00',actions:[{service:'script.turn_on',entity_id:'script.sprinkler'}]}]});
   }
 
-  _update() { this._updateMeta(); this._updateZones(); this._updateSchedule(); }
+  _update() { this._updateMeta(); this._updateZones(); this._updateSchedule(); this._buildOneOff(); this._checkOneOffRun(); this._updateOneOffStatus(); }
 
   _updateMeta() {
     const meta=this.shadowRoot.getElementById('hdr-meta'); if(!meta)return;
