@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.43';
+const CARD_VERSION = '2.9.44';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -2127,6 +2127,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._svc('scheduler','add',{
         name:'Sprinkler One-Off',
         weekdays:[dayShort],
+        repeat_type:'single',
         timeslots:[{start:timeStr,actions:[{service:'script.turn_on',entity_id:'script.sprinkler_oneoff'}]}],
       });
     }
