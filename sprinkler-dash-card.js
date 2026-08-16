@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.42';
+const CARD_VERSION = '2.9.43';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1907,7 +1907,18 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _toggleOneOff() {
     this._cfg.oneoff_enabled = !this._cfg.oneoff_enabled;
-    this._saveConfig({oneoff_enabled: this._cfg.oneoff_enabled});
+    if (this._cfg.oneoff_enabled && !this._cfg.oneoff_datetime) {
+      // default to now + 5 minutes
+      const def = new Date(Date.now() + 5*60000);
+      const pad = n => String(n).padStart(2,'0');
+      this._cfg.oneoff_datetime = `${def.getFullYear()}-${pad(def.getMonth()+1)}-${pad(def.getDate())}T${pad(def.getHours())}:${pad(def.getMinutes())}`;
+    }
+    this._saveConfig({oneoff_enabled: this._cfg.oneoff_enabled, oneoff_datetime: this._cfg.oneoff_datetime});
+    if (this._cfg.oneoff_enabled) {
+      this._applyOneOffSchedule();
+    } else {
+      this._disableOneOffSchedule();
+    }
     this._buildOneOff();
   }
 
@@ -2007,6 +2018,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._cfg.oneoff_datetime=dt;
       this._saveConfig({oneoff_datetime:dt});
       this._updateOneOffStatus();
+      if (this._cfg.oneoff_enabled) this._applyOneOffSchedule();
       okBtn.textContent='✓ Saved'; setTimeout(()=>okBtn.textContent='✓ Set',1500);
     });
 
@@ -2039,6 +2051,7 @@ class SprinklerDashCardV2 extends HTMLElement {
           }).filter(Boolean);
           this._cfg.oneoff_zones=zones;
           this._saveConfig({oneoff_zones:zones});
+          if (this._cfg.oneoff_enabled) this._applyOneOffSchedule();
         };
         cb.addEventListener('change', save);
         durInp.addEventListener('change', save);
@@ -2054,57 +2067,87 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (!el) return;
     const dt = this._cfg.oneoff_datetime;
     const zones = this._cfg.oneoff_zones || [];
-    if (!dt) { el.textContent='Set a date and time above'; return; }
+    if (!dt) { el.textContent='Set a date and time above'; el.style.color=''; return; }
     const d = new Date(dt);
     const now = new Date();
-    if (d <= now) { el.textContent='⚠️ Date is in the past — set a future date'; el.style.color='#ffb43c'; return; }
-    el.style.color='';
     const diff = d - now;
+    const schedRunning = this._hass.states['switch.schedule_sprinkler_oneoff']?.state === 'on';
+    if (diff <= 0 && !schedRunning) {
+      el.textContent='✅ Completed — toggle to schedule another'; el.style.color='#4dc49a'; return;
+    }
+    if (diff <= 0) { el.textContent='⚠️ Date is in the past — set a future date'; el.style.color='#ffb43c'; return; }
+    el.style.color='';
     const h = Math.floor(diff/3600000), m = Math.floor((diff%3600000)/60000);
     const days = Math.floor(diff/86400000);
     const timeStr = dt.substring(11,16);
-    const dayStr = days>0 ? `in ${days}d ${h%24}h` : `in ${h}h ${m}m`;
-    el.textContent = zones.length ? `▶ Will run ${zones.length} zone(s) on ${d.toLocaleDateString([],{weekday:'short',day:'numeric',month:'short'})} at ${timeStr} (${dayStr})` : '⚠️ Select at least one zone';
+    const dayStr = days>0 ? `in ${days}d ${Math.floor((diff%86400000)/3600000)}h` : `in ${h}h ${m}m`;
+    const serverStr = schedRunning ? ' ✓ scheduled server-side' : '';
+    el.textContent = zones.length ? `▶ ${zones.length} zone(s) on ${d.toLocaleDateString([],{weekday:'short',day:'numeric',month:'short'})} at ${timeStr} (${dayStr})${serverStr}` : '⚠️ Select at least one zone';
   }
 
   _checkOneOffRun() {
-    if (!this._cfg.oneoff_enabled) return;
-    const dt = this._cfg.oneoff_datetime;
+    // server-side only now — check if scheduler entity fired and clean up
+    const schedE = 'switch.schedule_sprinkler_oneoff';
+    const schedState = this._hass.states[schedE];
+    if (!schedState) return;
+    // if scheduler ran (last_triggered within last 5 min) and script finished, mark as done
+    const lastTriggered = schedState.attributes?.last_triggered || schedState.attributes?.next_trigger;
+    // cleanup is handled by automation.sprinkler_oneoff_cleanup
+  }
+
+  async _applyOneOffSchedule() {
     const zones = this._cfg.oneoff_zones || [];
-    if (!dt || !zones.length) return;
-    const scheduled = new Date(dt);
-    const now = new Date();
-    const diff = now - scheduled;
-    if (diff >= 0 && diff < 120000) { // within 2 min of scheduled time
-      if (this._oneoffFired) return;
-      this._oneoffFired = true;
-      this._runOneOff(zones);
-    } else if (diff < 0) {
-      this._oneoffFired = false; // reset for next time
+    const dt = this._cfg.oneoff_datetime;
+    if (!zones.length || !dt) return;
+
+    // 1. build script.sprinkler_oneoff
+    const sequence = [];
+    zones.forEach(z => {
+      sequence.push({conditions:[{condition:'template',value_template:`{{ not '${z.sw}' in (states('input_text.sprinkler_skip_zones')|default('')).split(',') }}`}],sequence:[{action:'switch.turn_on',target:{entity_id:z.sw}},{delay:{minutes:z.dur||10}},{action:'switch.turn_off',target:{entity_id:z.sw}}]});
+    });
+    await this._hass.callApi('POST','config/script/config/sprinkler_oneoff',{
+      alias:'Sprinkler One-Off',icon:'mdi:calendar-clock',mode:'single',sequence,
+    }).catch(()=>{});
+    await this._hass.callService('script','reload').catch(()=>{});
+
+    // 2. create/update scheduler entity for the one-off time
+    const [datePart, timePart] = dt.split('T');
+    const timeStr = (timePart||'07:30') + ':00';
+    const d = new Date(dt);
+    const dayShort = ['sun','mon','tue','wed','thu','fri','sat'][d.getDay()];
+
+    // try to update existing, else create new
+    const existing = this._hass.states['switch.schedule_sprinkler_oneoff'];
+    if (existing) {
+      this._svc('scheduler','edit',{entity_id:'switch.schedule_sprinkler_oneoff',
+        timeslots:[{start:timeStr,actions:[{service:'script.turn_on',entity_id:'script.sprinkler_oneoff'}]}],
+        weekdays:[dayShort]});
+      this._svc('switch','turn_on',{entity_id:'switch.schedule_sprinkler_oneoff'});
+    } else {
+      this._svc('scheduler','add',{
+        name:'Sprinkler One-Off',
+        weekdays:[dayShort],
+        timeslots:[{start:timeStr,actions:[{service:'script.turn_on',entity_id:'script.sprinkler_oneoff'}]}],
+      });
+    }
+
+    // 3. create cleanup automation if not exists
+    if (!this._hass.states['automation.sprinkler_oneoff_cleanup']) {
+      this._hass.callApi('POST','config/automation/config/sprinkler_oneoff_cleanup',{
+        alias:'Sprinkler One-Off Cleanup',
+        mode:'single',
+        triggers:[{trigger:'state',entity_id:'script.sprinkler_oneoff',from:'on',to:'off'}],
+        actions:[
+          {action:'switch.turn_off',target:{entity_id:'switch.schedule_sprinkler_oneoff'}},
+        ],
+      }).catch(()=>{});
     }
   }
 
-  _runOneOff(zones) {
-    // build and run a one-off script
-    const sequence = zones.map(z => ([
-      {action:'switch.turn_on', target:{entity_id:z.sw}},
-      {delay:{minutes:z.dur||10}},
-      {action:'switch.turn_off', target:{entity_id:z.sw}},
-    ])).flat();
-    this._hass.callService('script','run',{variables:{},sequence});
-    // disable after firing
-    this._cfg.oneoff_enabled = false;
-    this._saveConfig({oneoff_enabled:false});
-    // log it
-    const e='input_text.sprinkler_run_log_0';
-    if (this._hass.states[e]) {
-      const t=new Date().toISOString().substring(0,16);
-      const d=zones.map(z=>z.dur||10);
-      const existing=JSON.parse(this._hass.states[e].state||'[]');
-      const val=JSON.stringify([{t,d,s:[],oneoff:true},...existing].slice(0,4));
-      if(val.length<=255) this._svc('input_text','set_value',{entity_id:e,value:val});
+  _disableOneOffSchedule() {
+    if (this._hass.states['switch.schedule_sprinkler_oneoff']) {
+      this._svc('switch','turn_off',{entity_id:'switch.schedule_sprinkler_oneoff'});
     }
-    this._buildOneOff();
   }
 
   _showLastRun() {
@@ -2241,7 +2284,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._svc('scheduler','edit',{entity_id:e,timeslots:[{start:ts+':00',actions:[{service:'script.turn_on',entity_id:'script.sprinkler'}]}]});
   }
 
-  _update() { this._updateMeta(); this._updateZones(); this._updateSchedule(); this._buildOneOff(); this._checkOneOffRun(); this._updateOneOffStatus(); }
+  _update() { this._updateMeta(); this._updateZones(); this._updateSchedule(); this._buildOneOff(); this._updateOneOffStatus(); }
 
   _updateMeta() {
     const meta=this.shadowRoot.getElementById('hdr-meta'); if(!meta)return;
