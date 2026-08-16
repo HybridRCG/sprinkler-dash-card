@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.41';
+const CARD_VERSION = '2.9.42';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -655,6 +655,20 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zdur-btn{width:38px;height:20px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;transition:background .15s;padding:0}
     .zdur-btn:hover{background:rgba(26,138,100,0.35);border-color:#1a8a64;color:#4dc49a}
     .zdur-btn:active{transform:scale(0.93)}
+    /* calendar picker */
+    .cal-popup{position:absolute;z-index:10001;background:#1a1a1a;border:1px solid rgba(77,196,154,0.3);border-radius:10px;padding:8px;width:220px;box-shadow:0 4px 20px rgba(0,0,0,0.5)}
+    .cal-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
+    .cal-nav{background:none;border:none;color:#4dc49a;font-size:16px;cursor:pointer;padding:2px 6px;border-radius:4px}
+    .cal-nav:hover{background:rgba(77,196,154,0.1)}
+    .cal-month{font-size:12px;font-weight:700;color:var(--primary-text-color,#eee)}
+    .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
+    .cal-dow{font-size:9px;font-weight:700;text-align:center;color:var(--secondary-text-color,#555);padding:2px 0}
+    .cal-day{font-size:11px;text-align:center;padding:4px 2px;border-radius:4px;cursor:pointer;color:var(--primary-text-color,#eee);border:none;background:none}
+    .cal-day:hover{background:rgba(77,196,154,0.15)}
+    .cal-day--today{border:1px solid rgba(77,196,154,0.4);color:#4dc49a}
+    .cal-day--sel{background:#1a8a64;color:#fff;font-weight:700}
+    .cal-day--empty{cursor:default}
+    .cal-day--past{color:var(--secondary-text-color,#444);cursor:default}
     /* one-off scheduler */
     .oneoff-wrap{margin:0 6px 6px;border-radius:9px;border:1px solid rgba(77,196,154,0.2);background:rgba(26,138,100,0.05);overflow:hidden}
     .oneoff-hdr{display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(77,196,154,0.1);gap:8px}
@@ -1917,6 +1931,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     const [syear, smonth, sday] = datePart ? datePart.split('-').map(Number) : [new Date().getFullYear(), new Date().getMonth()+1, new Date().getDate()+1];
     const [shour, smin] = timePart ? timePart.split(':').map(Number) : [7, 30];
 
+    const sep = (t) => { const s=document.createElement('span'); s.className='oneoff-sep'; s.textContent=t; return s; };
     const mk = (min,max,val,ph) => {
       const inp = document.createElement('input');
       inp.type='number'; inp.className='oneoff-num'; inp.min=min; inp.max=max;
@@ -1924,17 +1939,68 @@ class SprinklerDashCardV2 extends HTMLElement {
       inp.setAttribute('inputmode','numeric');
       return inp;
     };
-    const sep = (t) => { const s=document.createElement('span'); s.className='oneoff-sep'; s.textContent=t; return s; };
 
-    const dayInp=mk(1,31,sday,'DD'), monInp=mk(1,12,smonth,'MM'), yrInp=mk(2026,2099,syear,'YYYY');
-    yrInp.style.width='52px';
+    // date button opens calendar
+    let selYear=syear, selMonth=smonth-1, selDay=sday;
+    const dateBtn=document.createElement('button');
+    dateBtn.style.cssText='padding:5px 10px;border-radius:6px;border:1px solid rgba(77,196,154,0.4);background:rgba(26,138,100,0.15);color:#4dc49a;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap';
+    const updateDateBtn = () => {
+      const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      dateBtn.textContent=`📅 ${selDay} ${months[selMonth]} ${selYear}`;
+    };
+    updateDateBtn();
+
+    dateBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.querySelectorAll('.cal-popup').forEach(p=>p.remove());
+      const popup=document.createElement('div'); popup.className='cal-popup';
+      let viewYear=selYear, viewMonth=selMonth;
+      const render = () => {
+        popup.innerHTML='';
+        const months=['January','February','March','April','May','June','July','August','September','October','November','December'];
+        const hdr=document.createElement('div'); hdr.className='cal-hdr';
+        const prev=document.createElement('button'); prev.className='cal-nav'; prev.textContent='‹';
+        prev.onclick=(e)=>{e.stopPropagation();viewMonth--;if(viewMonth<0){viewMonth=11;viewYear--;}render();};
+        const next=document.createElement('button'); next.className='cal-nav'; next.textContent='›';
+        next.onclick=(e)=>{e.stopPropagation();viewMonth++;if(viewMonth>11){viewMonth=0;viewYear++;}render();};
+        const title=document.createElement('span'); title.className='cal-month'; title.textContent=months[viewMonth]+' '+viewYear;
+        hdr.append(prev,title,next); popup.appendChild(hdr);
+        const grid=document.createElement('div'); grid.className='cal-grid';
+        ['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(d=>{const el=document.createElement('div');el.className='cal-dow';el.textContent=d;grid.appendChild(el);});
+        const first=new Date(viewYear,viewMonth,1).getDay();
+        const days=new Date(viewYear,viewMonth+1,0).getDate();
+        const today=new Date();
+        for(let i=0;i<first;i++){const el=document.createElement('button');el.className='cal-day cal-day--empty';el.disabled=true;grid.appendChild(el);}
+        for(let d=1;d<=days;d++){
+          const el=document.createElement('button'); el.className='cal-day'; el.textContent=d;
+          const isPast=new Date(viewYear,viewMonth,d)<new Date(today.getFullYear(),today.getMonth(),today.getDate());
+          if(isPast) el.classList.add('cal-day--past'),el.disabled=true;
+          if(d===today.getDate()&&viewMonth===today.getMonth()&&viewYear===today.getFullYear()) el.classList.add('cal-day--today');
+          if(d===selDay&&viewMonth===selMonth&&viewYear===selYear) el.classList.add('cal-day--sel');
+          el.onclick=(e)=>{e.stopPropagation();selDay=d;selMonth=viewMonth;selYear=viewYear;updateDateBtn();popup.remove();};
+          grid.appendChild(el);
+        }
+        popup.appendChild(grid);
+      };
+      render();
+      // position below button
+      const rect=dateBtn.getBoundingClientRect();
+      const hostRect=this.getBoundingClientRect();
+      popup.style.top=(rect.bottom-hostRect.top+this.scrollTop+4)+'px';
+      popup.style.left=(rect.left-hostRect.left)+'px';
+      this.shadowRoot.appendChild(popup);
+      const close=(e)=>{if(!popup.contains(e.target)&&e.target!==dateBtn){popup.remove();document.removeEventListener('click',close);}};
+      setTimeout(()=>document.addEventListener('click',close),0);
+    });
+
+    // time inputs
     const hInp=mk(0,23,shour,'HH'), mInp=mk(0,59,smin,'MM');
 
     const okBtn=document.createElement('button'); okBtn.className='oneoff-ok'; okBtn.textContent='✓ Set';
     okBtn.addEventListener('click', () => {
-      const d=String(parseInt(dayInp.value)||1).padStart(2,'0');
-      const mo=String(parseInt(monInp.value)||1).padStart(2,'0');
-      const y=parseInt(yrInp.value)||new Date().getFullYear();
+      const d=String(selDay).padStart(2,'0');
+      const mo=String(selMonth+1).padStart(2,'0');
+      const y=selYear;
       const h=String(Math.min(23,parseInt(hInp.value)||0)).padStart(2,'0');
       const m=String(Math.min(59,parseInt(mInp.value)||0)).padStart(2,'0');
       const dt=`${y}-${mo}-${d}T${h}:${m}`;
@@ -1944,7 +2010,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       okBtn.textContent='✓ Saved'; setTimeout(()=>okBtn.textContent='✓ Set',1500);
     });
 
-    dtEl.append(dayInp,sep('/'),monInp,sep('/'),yrInp,sep(' '),hInp,sep(':'),mInp,okBtn);
+    dtEl.append(dateBtn,sep(' '),hInp,sep(':'),mInp,okBtn);
 
     // build zone checkboxes
     const zonesEl = r.getElementById('oneoff-zones');
