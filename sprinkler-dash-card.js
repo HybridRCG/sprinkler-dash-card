@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.44';
+const CARD_VERSION = '2.9.45';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1914,6 +1914,9 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._cfg.oneoff_datetime = `${def.getFullYear()}-${pad(def.getMonth()+1)}-${pad(def.getDate())}T${pad(def.getHours())}:${pad(def.getMinutes())}`;
     }
     this._saveConfig({oneoff_enabled: this._cfg.oneoff_enabled, oneoff_datetime: this._cfg.oneoff_datetime});
+    // force rebuild so date/time inputs reflect new defaults
+    const dtEl2 = this.shadowRoot?.getElementById('oneoff-datetime');
+    if (dtEl2) delete dtEl2.dataset.built;
     if (this._cfg.oneoff_enabled) {
       this._applyOneOffSchedule();
     } else {
