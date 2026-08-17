@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.47';
+const CARD_VERSION = '2.9.48';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -2103,23 +2103,30 @@ class SprinklerDashCardV2 extends HTMLElement {
     const dt = this._cfg.oneoff_datetime;
     if (!zones.length || !dt) return;
 
-    // 1. build script.sprinkler_oneoff
-    const sequence = [];
-    zones.forEach(z => {
-      sequence.push({conditions:[{condition:'template',value_template:`{{ not '${z.sw}' in (states('input_text.sprinkler_skip_zones')|default('')).split(',') }}`}],sequence:[{action:'switch.turn_on',target:{entity_id:z.sw}},{delay:{minutes:z.dur||10}},{action:'switch.turn_off',target:{entity_id:z.sw}}]});
-    });
-    await this._hass.callApi('POST','config/script/config/sprinkler_oneoff',{
-      alias:'Sprinkler One-Off',icon:'mdi:calendar-clock',mode:'single',sequence,
-    }).catch(()=>{});
-    await this._hass.callService('script','reload').catch(()=>{});
-
-    // 2. create/update scheduler entity for the one-off time
     const [datePart, timePart] = dt.split('T');
     const timeStr = (timePart||'07:30') + ':00';
     const d = new Date(dt);
     const dayShort = ['sun','mon','tue','wed','thu','fri','sat'][d.getDay()];
 
-    // try to update existing, else create new
+    // Build sequence for the script
+    const sequence = [];
+    zones.forEach(z => {
+      sequence.push({action:'switch.turn_on', target:{entity_id:z.sw}});
+      sequence.push({delay:{minutes:z.dur||10}});
+      sequence.push({action:'switch.turn_off', target:{entity_id:z.sw}});
+    });
+
+    // 1. Create/update script.sprinkler_oneoff via config API
+    try {
+      await this._hass.callApi('POST','config/script/config/sprinkler_oneoff',{
+        alias:'Sprinkler One-Off', icon:'mdi:calendar-clock', mode:'single', sequence,
+      });
+      await this._hass.callService('script','reload');
+    } catch(e) {
+      console.warn('[SprinklerCard] one-off script creation failed:', e);
+    }
+
+    // 2. Create/update scheduler entity
     const existing = this._hass.states['switch.schedule_sprinkler_oneoff'];
     if (existing) {
       this._svc('scheduler','edit',{entity_id:'switch.schedule_sprinkler_oneoff',
@@ -2128,23 +2135,21 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._svc('switch','turn_on',{entity_id:'switch.schedule_sprinkler_oneoff'});
     } else {
       this._svc('scheduler','add',{
-        name:'Sprinkler One-Off',
-        weekdays:[dayShort],
-        repeat_type:'single',
+        name:'Sprinkler One-Off', weekdays:[dayShort], repeat_type:'single',
         timeslots:[{start:timeStr,actions:[{service:'script.turn_on',entity_id:'script.sprinkler_oneoff'}]}],
       });
     }
 
-    // 3. create cleanup automation if not exists
-    if (!this._hass.states['automation.sprinkler_oneoff_cleanup']) {
-      this._hass.callApi('POST','config/automation/config/sprinkler_oneoff_cleanup',{
-        alias:'Sprinkler One-Off Cleanup',
-        mode:'single',
+    // 3. Create cleanup automation to disable scheduler after run
+    try {
+      await this._hass.callApi('POST','config/automation/config/sprinkler_oneoff_cleanup',{
+        alias:'Sprinkler One-Off Cleanup', mode:'single',
         triggers:[{trigger:'state',entity_id:'script.sprinkler_oneoff',from:'on',to:'off'}],
-        actions:[
-          {action:'switch.turn_off',target:{entity_id:'switch.schedule_sprinkler_oneoff'}},
-        ],
-      }).catch(()=>{});
+        conditions:[{condition:'template',value_template:"{{ (now() - trigger.from_state.last_changed).total_seconds() > 30 }}"}],
+        actions:[{action:'switch.turn_off',target:{entity_id:'switch.schedule_sprinkler_oneoff'}}],
+      });
+    } catch(e) {
+      // automation may already exist, that is fine
     }
   }
 
