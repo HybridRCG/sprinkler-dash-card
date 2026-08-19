@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.48';
+const CARD_VERSION = '2.9.49';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -840,17 +840,6 @@ class SprinklerDashCardV2 extends HTMLElement {
         </div>
       </div>
     </div>
-    <div class="oneoff-wrap" id="oneoff-wrap">
-      <div class="oneoff-hdr">
-        <span class="oneoff-title">📅 One-Off Run</span>
-        <div class="stoggle" id="oneoff-toggle"><div class="stoggle-thumb"></div></div>
-      </div>
-      <div class="oneoff-body" id="oneoff-body" style="display:none">
-        <div class="oneoff-datetime" id="oneoff-datetime"></div>
-        <div class="oneoff-zones" id="oneoff-zones"></div>
-        <div class="oneoff-status" id="oneoff-status"></div>
-      </div>
-    </div>
     <div class="lastrun-modal" id="lastrun-modal">
       <div class="lastrun-box">
         <div class="lastrun-hdr">
@@ -1006,7 +995,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     r.getElementById('btn-start').addEventListener('click', () => this._startSchedule());
     r.getElementById('btn-stop-sched').addEventListener('click', () => this._stopSchedule());
     r.getElementById('btn-lastrun').addEventListener('click', () => this._showLastRun());
-    r.getElementById('oneoff-toggle').addEventListener('click', () => this._toggleOneOff());
     r.getElementById('lastrun-close').addEventListener('click', () => {
       r.getElementById('lastrun-modal').classList.remove('lastrun-modal--open');
     });
@@ -2293,7 +2281,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._svc('scheduler','edit',{entity_id:e,timeslots:[{start:ts+':00',actions:[{service:'script.turn_on',entity_id:'script.sprinkler'}]}]});
   }
 
-  _update() { this._updateMeta(); this._updateZones(); this._updateSchedule(); this._buildOneOff(); this._updateOneOffStatus(); }
+  _update() { this._updateMeta(); this._updateZones(); this._updateSchedule(); }
 
   _updateMeta() {
     const meta=this.shadowRoot.getElementById('hdr-meta'); if(!meta)return;
