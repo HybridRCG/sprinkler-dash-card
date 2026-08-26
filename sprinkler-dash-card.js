@@ -1,4 +1,4 @@
-const CARD_VERSION = 7;
+const CARD_VERSION = '2.9.61';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1360,6 +1360,12 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
 
     body.append(s2,s3,s4,s5);
+
+    // ── Version footer ──
+    const verFooter=document.createElement('div'); 
+    verFooter.style.cssText='margin-top:20px;padding-top:10px;border-top:1px solid rgba(255,255,255,0.1);text-align:center;font-size:10px;color:var(--secondary-text-color,#888)';
+    verFooter.textContent='Sprinkler Dash Card v'+CARD_VERSION;
+    body.appendChild(verFooter);
   }
 
   _doSave(btn) {
