@@ -134,10 +134,10 @@ class SprinklerDashCardV2 extends HTMLElement {
         stopBtn.style.display = running ? '' : 'none';
         startBtn.style.display = running ? 'none' : '';
       }
-      // record last run when script finishes
-      if (prevScriptState === 'on' && scriptState === 'off') {
-        this._recordLastRun();
-      }
+      // record last run when script finishes (disabled — now using scheduler's last_triggered)
+      // if (prevScriptState === 'on' && scriptState === 'off') {
+      //   this._recordLastRun();
+      // }
     }
 
     // rain auto-restore: if rain rule disabled the schedule, re-enable after rain_restore_hours
@@ -346,7 +346,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       (s.attributes.entities||[]).includes('script.sprinkler')
     );
     const needsSkipHelper = !this._hass.states['input_text.sprinkler_skip_zones'];
-    const needsLastRunHelper = !this._hass.states['input_text.sprinkler_last_run'];
+    // Last Run now uses scheduler's last_triggered — no helper needed
+    // const needsLastRunHelper = !this._hass.states['input_text.sprinkler_last_run'];
 
     const afterHelper = (helperJustCreated) => {
       if (needsScript || helperJustCreated) {
@@ -358,29 +359,28 @@ class SprinklerDashCardV2 extends HTMLElement {
       }
     };
 
-    if (needsSkipHelper || needsLastRunHelper) {
-      const creates = [];
-      if (needsSkipHelper) creates.push(this._createSkipHelper());
-      if (needsLastRunHelper) creates.push(this._createLastRunHelper());
-      Promise.all(creates).then(() => setTimeout(()=>afterHelper(needsSkipHelper), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
+    if (needsSkipHelper) {
+      const creates = [this._createSkipHelper()];
+      Promise.all(creates).then(() => setTimeout(()=>afterHelper(true), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
     } else {
       afterHelper(false);
     }
   }
 
-  async _createLastRunHelper() {
-    try {
-      await this._hass.connection.sendMessagePromise({
-        type: 'input_text/create',
-        name: 'Sprinkler Last Run',
-        max: 255, min: 0, mode: 'text', initial: '',
-        icon: 'mdi:history',
-      });
-      console.log('[SprinklerCard] created input_text.sprinkler_last_run');
-    } catch(e) {
-      console.warn('[SprinklerCard] could not auto-create last run helper', e);
-    }
-  }
+  // Last Run now reads from scheduler's last_triggered attribute — helper no longer needed
+  // async _createLastRunHelper() {
+  //   try {
+  //     await this._hass.connection.sendMessagePromise({
+  //       type: 'input_text/create',
+  //       name: 'Sprinkler Last Run',
+  //       max: 255, min: 0, mode: 'text', initial: '',
+  //       icon: 'mdi:history',
+  //     });
+  //     console.log('[SprinklerCard] created input_text.sprinkler_last_run');
+  //   } catch(e) {
+  //     console.warn('[SprinklerCard] could not auto-create last run helper', e);
+  //   }
+  // }
 
   async _createSkipHelper() {
     // create input_text.sprinkler_skip_zones via the direct websocket helper-creation command
@@ -1486,60 +1486,92 @@ class SprinklerDashCardV2 extends HTMLElement {
   _showLastRun() {
     const r = this.shadowRoot;
     const body = r.getElementById('lastrun-body');
-    const raw = this._hass.states['input_text.sprinkler_last_run']?.state || '';
-    if (!raw || raw === 'unknown' || raw === '') {
-      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet. Run the schedule to see details here.</p>';
-    } else {
-      try {
-        const data = JSON.parse(raw);
-        const ts = data.ts ? new Date(data.ts).toLocaleString([], {weekday:'long',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
-        let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
-        const zones = (data.zones || data.z || []).map(z => ({
-          name: z.name || z.n || '?',
-          dur: z.dur ?? z.d ?? null,
-          skipped: z.skipped || z.s === 1,
-        }));
-        const ran = zones.filter(z=>!z.skipped);
-        const skipped = zones.filter(z=>z.skipped);
-        if (ran.length) {
-          html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
-          ran.forEach(z => {
-            html += `<div class="lastrun-row">
-              <span class="lastrun-zone">💧 ${z.name}</span>
-              <span class="lastrun-dur">${z.dur ? z.dur+'m' : '—'}</span>
-            </div>`;
-          });
-        }
-        if (skipped.length) {
-          html += `<div class="lastrun-section-lbl" style="margin-top:10px">Skipped (${skipped.length})</div>`;
-          skipped.forEach(z => {
-            html += `<div class="lastrun-row">
-              <span class="lastrun-skipped">⏭ ${z.name}</span>
-              <span class="lastrun-dur">—</span>
-            </div>`;
-          });
-        }
-        body.innerHTML = html;
-      } catch(e) {
-        body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Could not read last run data. It may be incomplete — run the schedule again to reset.</p>';
-      }
+    const schedE = this._cfg.schedule_entity;
+    
+    if (!schedE || !this._hass.states[schedE]) {
+      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Scheduler not configured.</p>';
+      r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
+      return;
     }
+
+    const schedState = this._hass.states[schedE];
+    const lastTriggered = schedState.attributes?.last_triggered;
+    
+    if (!lastTriggered) {
+      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet. Run the schedule to see details here.</p>';
+      r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
+      return;
+    }
+
+    // Show when schedule last ran
+    const ts = new Date(lastTriggered).toLocaleString([], {weekday:'long',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
+    
+    // Show which zones have recent activity (last ran within last 30 minutes)
+    const thirtyMinAgo = Date.now() - (30 * 60 * 1000);
+    const recentZones = [];
+    const skipList = this._skipList();
+    
+    this._activeZones().forEach(z => {
+      if (!z.sw || z.schedule_enabled === false) return;
+      const sw = this._hass.states[z.sw];
+      if (!sw || !sw.last_changed) return;
+      
+      const lastChanged = new Date(sw.last_changed).getTime();
+      if (lastChanged > thirtyMinAgo) {
+        recentZones.push({
+          name: z.name,
+          lastChanged: lastChanged,
+          skipped: skipList.includes(z.sw)
+        });
+      }
+    });
+
+    if (recentZones.length > 0) {
+      recentZones.sort((a,b) => b.lastChanged - a.lastChanged);
+      const ran = recentZones.filter(z => !z.skipped);
+      const skipped = recentZones.filter(z => z.skipped);
+      
+      if (ran.length) {
+        html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
+        ran.forEach(z => {
+          html += `<div class="lastrun-row">
+            <span class="lastrun-zone">💧 ${z.name}</span>
+            <span class="lastrun-dur">✓</span>
+          </div>`;
+        });
+      }
+      if (skipped.length) {
+        html += `<div class="lastrun-section-lbl" style="margin-top:10px">Skipped (${skipped.length})</div>`;
+        skipped.forEach(z => {
+          html += `<div class="lastrun-row">
+            <span class="lastrun-skipped">⏭ ${z.name}</span>
+            <span class="lastrun-dur">—</span>
+          </div>`;
+        });
+      }
+    } else {
+      html += '<p style="color:var(--secondary-text-color,#666);margin-top:10px">No zone activity in last 30 minutes.</p>';
+    }
+    
+    body.innerHTML = html;
     r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
   }
 
-  _recordLastRun() {
-    const e = 'input_text.sprinkler_last_run';
-    if (!this._hass.states[e]) return;
-    const skipList = this._skipList();
-    // store compact data to fit in 255 char limit — short name truncation
-    const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>({
-      n: z.name.substring(0,12),
-      d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : null,
-      s: skipList.includes(z.sw) ? 1 : 0,
-    }));
-    const data = JSON.stringify({ ts: new Date().toISOString(), z: zones });
-    this._svc('input_text', 'set_value', {entity_id: e, value: data.substring(0, 255)});
-  }
+  // Last Run recording disabled — now uses scheduler's built-in last_triggered
+  // _recordLastRun() {
+  //   const e = 'input_text.sprinkler_last_run';
+  //   if (!this._hass.states[e]) return;
+  //   const skipList = this._skipList();
+  //   // store compact data to fit in 255 char limit — short name truncation
+  //   const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>({
+  //     n: z.name.substring(0,12),
+  //     d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : null,
+  //     s: skipList.includes(z.sw) ? 1 : 0,
+  //   }));
+  //   const data = JSON.stringify({ ts: new Date().toISOString(), z: zones });
+  //   this._svc('input_text', 'set_value', {entity_id: e, value: data.substring(0, 255)});
+  // }
 
   _toggleDay(day) {
     const e=this._cfg.schedule_entity; if(!e)return;
