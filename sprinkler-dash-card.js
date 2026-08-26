@@ -1618,10 +1618,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       let label;
       if(diff<0) label='overdue';
       else if(h<1) label='in '+m+'m';
-      else if(h<24){
-        if(d.toDateString()===todayDate) label='Tonight '+timeStr;
-        else label='in '+h+'h '+(m>0?m+'m':'');
-      } else if(d.toDateString()===tomorrowDate) label='Tomorrow '+timeStr;
+      else if(h<24) label='in '+h+'h '+(m>0?m+'m':'');
+      else if(d.toDateString()===tomorrowDate) label='Tomorrow '+timeStr;
       else label=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+timeStr;
       nextEl.textContent=isOn?'next: '+label:'disabled';
       nextEl.className='sched-next'+(isOn?' sched-next--on':'');
