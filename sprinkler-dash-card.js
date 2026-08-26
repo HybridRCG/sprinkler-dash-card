@@ -732,12 +732,79 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
     const timeEl = r.getElementById('sched-time');
     timeEl.addEventListener('click', () => {
-      if (this._editingTime) return; this._editingTime=true;
-      const cur = timeEl.textContent.trim();
-      const inp = document.createElement('input'); inp.type='time'; inp.value=cur;
-      timeEl.innerHTML=''; timeEl.appendChild(inp); inp.focus();
-      const save = () => { this._editingTime=false; const val=inp.value; timeEl.textContent=val||cur; if (val&&val!==cur) this._saveTime(val); };
-      inp.addEventListener('blur', save); inp.addEventListener('change', save);
+      if (this._editingTime) return;
+      this._editingTime = true;
+      const cur = timeEl.textContent.trim() || '06:00';
+      const [curH, curM] = cur.split(':').map(Number);
+      timeEl.innerHTML = '';
+      
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:6px;background:rgba(26,138,100,0.15);border:1px solid rgba(77,196,154,0.4)';
+      
+      // Hour spinner
+      const hCont = document.createElement('div');
+      hCont.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:1px';
+      const hUp = document.createElement('button');
+      hUp.textContent = '▲'; hUp.style.cssText = 'width:24px;height:18px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:10px;cursor:pointer;border-radius:3px;padding:0;line-height:1';
+      const hInp = document.createElement('input');
+      hInp.type = 'number'; hInp.min = 0; hInp.max = 23;
+      hInp.value = String(curH).padStart(2,'0');
+      hInp.style.cssText = 'width:34px;font-size:18px;font-weight:700;text-align:center;padding:3px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#eee);border-radius:3px;-moz-appearance:textfield;outline:none';
+      hInp.addEventListener('input', ()=>{let v=parseInt(hInp.value)||0;if(v>23)hInp.value='23';});
+      const hDown = document.createElement('button');
+      hDown.textContent = '▼'; hDown.style.cssText = 'width:24px;height:18px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:10px;cursor:pointer;border-radius:3px;padding:0;line-height:1';
+      hUp.addEventListener('click', ()=>{let v=Math.min(23,parseInt(hInp.value||0)+1);hInp.value=String(v).padStart(2,'0');});
+      hDown.addEventListener('click', ()=>{let v=Math.max(0,parseInt(hInp.value||0)-1);hInp.value=String(v).padStart(2,'0');});
+      hCont.append(hUp, hInp, hDown);
+      
+      // Separator
+      const sep = document.createElement('span');
+      sep.textContent = ':';
+      sep.style.cssText = 'font-size:18px;font-weight:700;color:var(--primary-text-color,#eee)';
+      
+      // Min spinner
+      const mCont = document.createElement('div');
+      mCont.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:1px';
+      const mUp = document.createElement('button');
+      mUp.textContent = '▲'; mUp.style.cssText = 'width:24px;height:18px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:10px;cursor:pointer;border-radius:3px;padding:0;line-height:1';
+      const mInp = document.createElement('input');
+      mInp.type = 'number'; mInp.min = 0; mInp.max = 59;
+      mInp.value = String(curM).padStart(2,'0');
+      mInp.style.cssText = 'width:34px;font-size:18px;font-weight:700;text-align:center;padding:3px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#eee);border-radius:3px;-moz-appearance:textfield;outline:none';
+      mInp.addEventListener('input', ()=>{let v=parseInt(mInp.value)||0;if(v>59)mInp.value='59';});
+      const mDown = document.createElement('button');
+      mDown.textContent = '▼'; mDown.style.cssText = 'width:24px;height:18px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:10px;cursor:pointer;border-radius:3px;padding:0;line-height:1';
+      mUp.addEventListener('click', ()=>{let v=Math.min(59,parseInt(mInp.value||0)+1);mInp.value=String(v).padStart(2,'0');});
+      mDown.addEventListener('click', ()=>{let v=Math.max(0,parseInt(mInp.value||0)-1);mInp.value=String(v).padStart(2,'0');});
+      mCont.append(mUp, mInp, mDown);
+      
+      // OK button
+      const okBtn = document.createElement('button');
+      okBtn.textContent = '✓'; okBtn.style.cssText = 'width:28px;height:28px;border:1px solid rgba(77,196,154,0.4);background:rgba(26,138,100,0.15);color:#4dc49a;font-weight:700;cursor:pointer;border-radius:4px;padding:0';
+      okBtn.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        this._editingTime = false;
+        const h = Math.min(23, Math.max(0, parseInt(hInp.value)||0));
+        const m = Math.min(59, Math.max(0, parseInt(mInp.value)||0));
+        const val = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+        timeEl.innerHTML = '';
+        timeEl.textContent = val;
+        if (val !== cur) this._saveTime(val);
+      });
+      
+      // Cancel button
+      const xBtn = document.createElement('button');
+      xBtn.textContent = '✕'; xBtn.style.cssText = 'width:28px;height:28px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-weight:700;cursor:pointer;border-radius:4px;padding:0';
+      xBtn.addEventListener('click', (e)=>{
+        e.stopPropagation();
+        this._editingTime = false;
+        timeEl.innerHTML = '';
+        timeEl.textContent = cur;
+      });
+      
+      wrap.append(hCont, sep, mCont, okBtn, xBtn);
+      timeEl.appendChild(wrap);
+      setTimeout(() => { hInp.focus(); hInp.select(); }, 0);
     });
     r.getElementById('readme-close').addEventListener('click', () => {
       r.getElementById('readme-modal').classList.remove('readme-modal--open');
