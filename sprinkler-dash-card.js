@@ -317,14 +317,14 @@ class SprinklerDashCardV2 extends HTMLElement {
           }],
           else: [
             { action:'switch.turn_on', target:{ entity_id: z.sw } },
-            { delay: { minutes: `{{ states('${z.dur}') | float(10) | int }}` } },
+            { delay: { minutes: `{{ [states('${z.dur}') | float(0) | int, 1] | max }}` } },
             { action:'switch.turn_off', target:{ entity_id: z.sw } },
           ],
         });
       } else {
         // skip helper not available yet — run normally
         sequence.push({ action:'switch.turn_on', target:{ entity_id: z.sw } });
-        sequence.push({ delay: { minutes: `{{ states('${z.dur}') | float(10) | int }}` } });
+        sequence.push({ delay: { minutes: `{{ [states('${z.dur}') | float(0) | int, 1] | max }}` } });
         sequence.push({ action:'switch.turn_off', target:{ entity_id: z.sw } });
       }
     });
@@ -907,7 +907,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const dr=document.createElement('div'); dr.className='zdur-row';
       const dl=document.createElement('span'); dl.className='zdur-lbl'; dl.textContent='Min';
       const di=document.createElement('input'); di.type='number'; di.className='zdur-input';
-      di.id='zdur-'+i; di.min=0; di.max=60; di.step=1; di.value=10;
+      di.id='zdur-'+i; di.min=0; di.max=60; di.step=1; di.value=z.dur?parseFloat(this._hass.states[z.dur]?.state||10):10;
       const du=document.createElement('span'); du.className='zdur-unit'; du.textContent='min';
       const db=document.createElement('div'); db.className='zdur-btns';
       const bm=document.createElement('button'); bm.className='zdur-btn'; bm.textContent='-';
