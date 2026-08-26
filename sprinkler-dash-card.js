@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.49';
+const CARD_VERSION = 7;
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -31,20 +31,12 @@ const DEFAULT_CONFIG = {
   jojo_low_pct: 35,
   meta_slots: JSON.parse(JSON.stringify(DEFAULT_META_SLOTS)),
   rain_restore_hours: 48,
-  rain_restore_summer: 24,
-  rain_restore_winter: 48,
-  rain_restore_override: false,
-  rain_status_sensor: '',
-  tick_hours: 3,
   rules: {
     rain_disable_schedule: true,
     jojo_shutoff_zones: true,
     rain_auto_restore: true,
   },
   confirm_actions: true,
-  oneoff_zones: [],
-  oneoff_datetime: '',
-  oneoff_enabled: false,
 };
 
 class SprinklerDashCardV2 extends HTMLElement {
@@ -142,29 +134,9 @@ class SprinklerDashCardV2 extends HTMLElement {
         stopBtn.style.display = running ? '' : 'none';
         startBtn.style.display = running ? 'none' : '';
       }
-      // auto-refresh Last Run popup when script finishes (automation handles actual logging)
+      // record last run when script finishes
       if (prevScriptState === 'on' && scriptState === 'off') {
-        // auto-refresh Last Run popup after 4s (allows automation to write helper first)
-        setTimeout(() => {
-          const modal = this.shadowRoot?.getElementById('lastrun-modal');
-          if (modal?.classList.contains('lastrun-modal--open')) {
-            this._showLastRun();
-          } else {
-            // mark that new data is available — show indicator on button
-            const btn = this.shadowRoot?.getElementById('btn-lastrun');
-            if (btn) { btn.style.boxShadow='0 0 0 2px #4dc49a'; setTimeout(()=>{ if(btn) btn.style.boxShadow=''; }, 5000); }
-          }
-        }, 4000);
-      }
-    }
-
-    // seasonal rain restore auto-adjust
-    if (!this._cfg.rain_restore_override) {
-      const month = new Date().getMonth(); // 0=Jan
-      const isSummer = month >= 9 || month <= 2; // Oct-Mar
-      const seasonal = isSummer ? (this._cfg.rain_restore_summer||24) : (this._cfg.rain_restore_winter||48);
-      if (this._cfg.rain_restore_hours !== seasonal) {
-        this._cfg.rain_restore_hours = seasonal;
+        this._recordLastRun();
       }
     }
 
@@ -178,26 +150,13 @@ class SprinklerDashCardV2 extends HTMLElement {
         const rainThresh = this._cfg.rain_threshold || 5;
         // if schedule is off AND rain is now below threshold AND was disabled by rain rule
         if (schedState?.state === 'off' && rainVal < rainThresh) {
-          const map = this._manualRunMap ? this._manualRunMap() : {};
-          const persistedAt = map['_rain_disabled_at'];
-          const disabledAt = this._rainDisabledAt || (persistedAt ? new Date(persistedAt).getTime() : null);
+          const disabledAt = this._rainDisabledAt;
           if (disabledAt) {
             const hoursElapsed = (Date.now() - disabledAt) / 3600000;
             const restoreHours = this._cfg.rain_restore_hours || 48;
             if (hoursElapsed >= restoreHours) {
               this._rainDisabledAt = null;
-              this._clearRainDisabledAt();
               this._svc('switch', 'turn_on', {entity_id: schedE});
-            }
-          } else {
-            // no timestamp found + rain below threshold = safe to re-enable immediately
-            if (!this._restoreDebounce) {
-              this._restoreDebounce = setTimeout(() => {
-                this._restoreDebounce = null;
-                if (this._hass.states[schedE]?.state === 'off') {
-                  this._svc('switch', 'turn_on', {entity_id: schedE});
-                }
-              }, 5000);
             }
           }
         }
@@ -228,69 +187,16 @@ class SprinklerDashCardV2 extends HTMLElement {
     return this._skipList().includes(z.sw);
   }
 
-  _persistRainDisabledAt() {
-    const e = 'input_text.sprinkler_manual_runs';
-    if (!this._hass.states[e]) return;
-    const map = this._manualRunMap();
-    map['_rain_disabled_at'] = new Date().toISOString();
-    const val = JSON.stringify(map);
-    if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
-  }
-
-  _clearRainDisabledAt() {
-    const e = 'input_text.sprinkler_manual_runs';
-    if (!this._hass.states[e]) return;
-    const map = this._manualRunMap();
-    delete map['_rain_disabled_at'];
-    const val = JSON.stringify(map);
-    if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
-  }
-
   _toggleSkip(z) {
     const e = 'input_text.sprinkler_skip_zones';
-    if (!this._hass.states[e]) { console.warn('[SprinklerCard] skip helper not ready yet'); return; }
+    if (!this._hass.states[e]) {
+      console.warn('[SprinklerCard] skip helper not ready yet');
+      return;
+    }
     const cur = this._skipList();
     const isSkipped = cur.includes(z.sw);
     const next = isSkipped ? cur.filter(x=>x!==z.sw) : [...cur, z.sw];
     this._svc('input_text','set_value',{entity_id:e, value: next.join(',')});
-  }
-
-  _manualRunMap() {
-    const e = 'input_text.sprinkler_manual_runs';
-    const raw = this._hass.states[e]?.state || '';
-    if (!raw || raw === 'unknown') return {};
-    try { return JSON.parse(raw); } catch(err) { return {}; }
-  }
-
-  _isManualRecent(sw, hours=8) {
-    const map = this._manualRunMap();
-    const ts = map[sw];
-    if (!ts) return false;
-    return (Date.now() - new Date(ts).getTime()) < hours * 3600000;
-  }
-
-  _recordManualRun(sw) {
-    const e = 'input_text.sprinkler_manual_runs';
-    if (!this._hass.states[e]) return;
-    const map = this._manualRunMap();
-    // store when run completed (for blue badge)
-    map[sw] = new Date().toISOString();
-    // clear any pending stop time
-    delete map[sw+'_stop'];
-    Object.keys(map).forEach(k => { if (k.endsWith('_stop') || k === '_rain_disabled_at') return; if ((Date.now() - new Date(map[k]).getTime()) > 24*3600000) delete map[k]; });
-    const val = JSON.stringify(map);
-    if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
-  }
-
-  _recordManualStop(sw, durMins) {
-    const e = 'input_text.sprinkler_manual_runs';
-    if (!this._hass.states[e]) return;
-    const map = this._manualRunMap();
-    // store expected stop time so card can recover after reload
-    map[sw+'_stop'] = new Date(Date.now() + durMins*60000).toISOString();
-    Object.keys(map).forEach(k => { if (k.endsWith('_stop') || k === '_rain_disabled_at') return; if ((Date.now() - new Date(map[k]).getTime()) > 24*3600000) delete map[k]; });
-    const val = JSON.stringify(map);
-    if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
   }
 
   _saveConfig(patch) {
@@ -323,42 +229,6 @@ class SprinklerDashCardV2 extends HTMLElement {
         resolve(true);
       };
       okBtn.addEventListener('click', onOk);
-    });
-  }
-
-  _confirmWithTimer(title, msg, defaultDur=10) {
-    if (!this._cfg.confirm_actions) return Promise.resolve({dur: defaultDur});
-    const r = this.shadowRoot;
-    r.getElementById('confirm-title').textContent = title;
-    const msgEl = r.getElementById('confirm-msg');
-    msgEl.innerHTML = '';
-    const row = document.createElement('div'); row.style.cssText='display:flex;align-items:center;justify-content:center;gap:8px;margin:4px 0 0';
-    const lbl = document.createElement('span'); lbl.style.cssText='font-size:13px;color:var(--secondary-text-color,#aaa)'; lbl.textContent=msg;
-    const durInp = document.createElement('input'); durInp.type='number';
-    durInp.style.cssText='width:52px;padding:5px 6px;border-radius:6px;border:1px solid #1a8a64;background:rgba(26,138,100,0.15);color:var(--primary-text-color,#eee);font-size:15px;font-weight:700;text-align:center;outline:none';
-    durInp.min=1; durInp.max=120; durInp.value=defaultDur;
-    durInp.setAttribute('inputmode','numeric');
-    const unit = document.createElement('span'); unit.style.cssText='font-size:13px;color:var(--secondary-text-color,#aaa)'; unit.textContent='min';
-    row.append(lbl, durInp, unit); msgEl.appendChild(row);
-    const okBtn = r.getElementById('confirm-ok');
-    okBtn.className = 'confirm-btn confirm-btn--ok';
-    okBtn.textContent = '▶ Turn On';
-    r.getElementById('confirm-modal').classList.add('confirm-modal--open');
-    return new Promise(resolve => {
-      const onOk = () => {
-        cleanup();
-        resolve({ dur: Math.min(120, Math.max(1, parseInt(durInp.value)||defaultDur)) });
-      };
-      const onCancel = () => { cleanup(); resolve(null); };
-      const cleanup = () => {
-        r.getElementById('confirm-modal').classList.remove('confirm-modal--open');
-        okBtn.removeEventListener('click', onOk);
-        r.getElementById('confirm-cancel').removeEventListener('click', onCancel);
-        okBtn.textContent = 'Confirm';
-        msgEl.innerHTML = '';
-      };
-      okBtn.addEventListener('click', onOk);
-      r.getElementById('confirm-cancel').addEventListener('click', onCancel);
     });
   }
 
@@ -433,8 +303,6 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _ensureSprinklerScript() {
     if (this._scriptChecked) return;
-    // never rebuild while script is running — would kill an active watering run
-    if (this._hass.states['script.sprinkler']?.state === 'on') return;
     this._scriptChecked = true;
     const needsScript = !this._hass.states['script.sprinkler'];
     const needsSched  = !Object.values(this._hass.states).some(s =>
@@ -442,8 +310,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       (s.attributes.entities||[]).includes('script.sprinkler')
     );
     const needsSkipHelper = !this._hass.states['input_text.sprinkler_skip_zones'];
-    const needsLogHelpers = !this._hass.states['input_text.sprinkler_run_log_0'];
-    const needsManualHelper = !this._hass.states['input_text.sprinkler_manual_runs'];
+    const needsLastRunHelper = !this._hass.states['input_text.sprinkler_last_run'];
 
     const afterHelper = (helperJustCreated) => {
       if (needsScript || helperJustCreated) {
@@ -455,41 +322,28 @@ class SprinklerDashCardV2 extends HTMLElement {
       }
     };
 
-    if (needsSkipHelper || needsLogHelpers || needsManualHelper) {
+    if (needsSkipHelper || needsLastRunHelper) {
       const creates = [];
       if (needsSkipHelper) creates.push(this._createSkipHelper());
-      if (needsLogHelpers) creates.push(this._createLogHelpers());
-      if (needsManualHelper) creates.push(this._createManualHelper());
+      if (needsLastRunHelper) creates.push(this._createLastRunHelper());
       Promise.all(creates).then(() => setTimeout(()=>afterHelper(needsSkipHelper), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
     } else {
       afterHelper(false);
     }
   }
 
-  async _createLogHelpers() {
-    // create 3 ring-buffer input_text helpers for run history
-    for (let i = 0; i < 3; i++) {
-      try {
-        await this._hass.callApi('POST', 'config/helpers/input_text', {
-          name: 'Sprinkler Run Log ' + i,
-          max: 255, min: 0, mode: 'text',
-          icon: 'mdi:history',
-        });
-      } catch(e) {
-        // fallback to websocket
-        try {
-          await this._hass.connection.sendMessagePromise({
-            type: 'input_text/create',
-            name: 'Sprinkler Run Log ' + i,
-            max: 255, min: 0, mode: 'text', initial: '[]',
-            icon: 'mdi:history',
-          });
-        } catch(e2) {
-          console.warn('[SprinklerCard] could not create log helper ' + i, e2);
-        }
-      }
+  async _createLastRunHelper() {
+    try {
+      await this._hass.connection.sendMessagePromise({
+        type: 'input_text/create',
+        name: 'Sprinkler Last Run',
+        max: 255, min: 0, mode: 'text', initial: '',
+        icon: 'mdi:history',
+      });
+      console.log('[SprinklerCard] created input_text.sprinkler_last_run');
+    } catch(e) {
+      console.warn('[SprinklerCard] could not auto-create last run helper', e);
     }
-    console.log('[SprinklerCard] created sprinkler run log helpers');
   }
 
   async _createSkipHelper() {
@@ -507,16 +361,6 @@ class SprinklerDashCardV2 extends HTMLElement {
       console.log('[SprinklerCard] created input_text.sprinkler_skip_zones');
     } catch(e) {
       console.warn('[SprinklerCard] could not auto-create skip helper — per-zone skip will be unavailable until input_text.sprinkler_skip_zones exists', e);
-    }
-  }
-
-  async _createManualHelper() {
-    try {
-      await this._hass.callApi('POST', 'config/helpers/input_text', {
-        name: 'Sprinkler Manual Runs', max: 255, min: 0, mode: 'text', icon: 'mdi:hand-water',
-      });
-    } catch(e) {
-      try { await this._hass.connection.sendMessagePromise({type:'input_text/create',name:'Sprinkler Manual Runs',max:255,min:0,mode:'text',initial:'{}',icon:'mdi:hand-water'}); } catch(e2) {}
     }
   }
 
@@ -566,48 +410,15 @@ class SprinklerDashCardV2 extends HTMLElement {
     .hbtn--stop{background:rgba(210,45,45,0.9);color:#fff}
     .hbtn--start{background:rgba(255,255,255,0.92);color:#0a5c45}
     .zones{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px}
-    .zone{border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);padding:8px 9px 7px;position:relative;overflow:hidden;transition:border-color .6s ease,background .6s ease,box-shadow .6s ease}
-    .zone::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:rgba(255,255,255,0.06);transition:background .6s ease}
-    .zone--on{background:rgba(26,138,100,0.1);border-color:rgba(77,196,154,0.35);box-shadow:0 0 12px rgba(77,196,154,0.15)}
+    .zone{border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);padding:8px 9px 7px;position:relative;overflow:hidden;transition:border-color .2s,background .2s}
+    .zone::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:rgba(255,255,255,0.06);transition:background .2s}
+    .zone--on{background:rgba(26,138,100,0.1);border-color:rgba(77,196,154,0.35)}
     .zone--on::before{background:linear-gradient(90deg,#1a8a64,#4dc49a)}
     .ztop{display:flex;align-items:center;gap:6px;margin-bottom:6px}
-    .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .6s ease,color .6s ease,border-color .6s ease}
+    .zseq{width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#555);font-size:10px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:1px solid rgba(255,255,255,0.08);transition:background .2s,color .2s}
     .zseq--on{background:rgba(26,138,100,0.4);color:#4dc49a;border-color:rgba(77,196,154,0.4)}
-    .zseq--done{background:rgba(26,138,100,0.25);color:#4dc49a;border-color:rgba(77,196,154,0.5)}
-    .zseq--manual{background:rgba(40,80,200,0.35);color:#7eb4ff;border-color:rgba(80,140,255,0.6)}
-    /* zone expand modal */
-    .zexpand-modal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.8);align-items:center;justify-content:center;padding:16px}
-    .zexpand-modal--open{display:flex}
-    .zexpand-box{background:#1a1a1a;border:1px solid rgba(77,196,154,0.3);border-radius:14px;width:100%;max-width:380px;padding:0;overflow:hidden}
-    .zexpand-hdr{display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,0.08)}
-    .zexpand-name{font-size:17px;font-weight:700;color:var(--primary-text-color,#eee)}
-    .zexpand-close{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:7px;color:var(--secondary-text-color,#aaa);font-size:13px;font-weight:600;padding:5px 10px;cursor:pointer}
-    .zexpand-body{padding:16px}
-    .zexpand-toggle-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
-    .zexpand-toggle-lbl{font-size:14px;color:var(--primary-text-color,#eee);font-weight:600}
-    .zexpand-toggle{width:44px;height:24px;border-radius:12px;background:rgba(255,255,255,0.1);border:none;cursor:pointer;position:relative;transition:background .2s;flex-shrink:0}
-    .zexpand-toggle--on{background:#1a8a64}
-    .zexpand-toggle-thumb{position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .2s}
-    .zexpand-toggle--on .zexpand-toggle-thumb{transform:translateX(20px)}
-    .zexpand-stat{font-size:13px;color:var(--secondary-text-color,#aaa);margin-bottom:4px}
-    .zexpand-prog-track{height:6px;background:rgba(255,255,255,0.08);border-radius:3px;margin-bottom:14px;overflow:hidden}
-    .zexpand-prog-fill{height:100%;background:#1a8a64;border-radius:3px;transition:width .5s linear;width:0%}
-    .zexpand-dur-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
-    .zexpand-dur-lbl{font-size:13px;color:var(--secondary-text-color,#aaa);min-width:60px}
-    .zexpand-dur-inp{width:60px;font-size:20px;font-weight:700;text-align:center;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);border-radius:8px;color:var(--primary-text-color,#eee);padding:6px 4px;outline:none;-moz-appearance:textfield}
-    .zexpand-dur-inp::-webkit-inner-spin-button,.zexpand-dur-inp::-webkit-outer-spin-button{-webkit-appearance:none}
-    .zexpand-dur-unit{font-size:13px;color:var(--secondary-text-color,#aaa)}
-    .zexpand-dur-btn{width:36px;height:36px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.06);color:var(--primary-text-color,#eee);font-size:18px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center}
-    .zexpand-dur-btn:hover{background:rgba(255,255,255,0.12)}
-    .zexpand-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-top:1px solid rgba(255,255,255,0.06)}
-    .zexpand-row-lbl{font-size:13px;color:var(--secondary-text-color,#aaa)}
-    .zexpand-last{font-size:12px;color:var(--secondary-text-color,#666)}
-    .zexpand-skip-btn{padding:5px 10px;border-radius:7px;border:1px solid rgba(255,180,60,0.3);background:rgba(255,180,60,0.1);color:#ffb43c;font-size:12px;font-weight:600;cursor:pointer}
-    .zexpand-skip-btn--active{background:rgba(255,180,60,0.25);border-color:rgba(255,180,60,0.6)}
-    .zexpand-sched-cb{width:16px;height:16px;accent-color:#1a8a64;cursor:pointer}
-    .zseq--queued{background:rgba(255,180,60,0.1);color:rgba(255,180,60,0.6);border-color:rgba(255,180,60,0.2)}
     .zname{flex:1;font-size:13px;font-weight:700;color:var(--primary-text-color,#f0f0f0);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .zone--on .zname{color:#7de8c0} .zname{transition:color .6s ease}
+    .zone--on .zname{color:#7de8c0}
     .zone--disabled .zname{color:var(--secondary-text-color,#555);text-decoration:line-through}
     .ztoggle{position:relative;width:32px;height:18px;border-radius:9px;background:rgba(255,255,255,0.12);cursor:pointer;flex-shrink:0;transition:background .25s}
     .ztoggle--on{background:#1a8a64}
@@ -639,7 +450,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     .lastrun-section-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#555);font-weight:700;margin-bottom:4px}
     .lastrun-dur{color:var(--secondary-text-color,#666);font-size:11px}
     .zprog-track{height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;margin-bottom:4px}
-    .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width 1.2s ease}
+    .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width .9s linear}
     .zstat{font-size:11px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:14px;margin-bottom:5px}
     .zstat--on{color:#4dc49a}
     .pulse{display:inline-block;width:5px;height:5px;border-radius:50%;background:#4dc49a;flex-shrink:0;animation:pulse 1.2s ease-in-out infinite}
@@ -655,36 +466,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zdur-btn{width:38px;height:20px;border-radius:4px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:15px;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;line-height:1;transition:background .15s;padding:0}
     .zdur-btn:hover{background:rgba(26,138,100,0.35);border-color:#1a8a64;color:#4dc49a}
     .zdur-btn:active{transform:scale(0.93)}
-    /* calendar picker */
-    .cal-popup{position:absolute;z-index:10001;background:#1a1a1a;border:1px solid rgba(77,196,154,0.3);border-radius:10px;padding:8px;width:220px;box-shadow:0 4px 20px rgba(0,0,0,0.5)}
-    .cal-hdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}
-    .cal-nav{background:none;border:none;color:#4dc49a;font-size:16px;cursor:pointer;padding:2px 6px;border-radius:4px}
-    .cal-nav:hover{background:rgba(77,196,154,0.1)}
-    .cal-month{font-size:12px;font-weight:700;color:var(--primary-text-color,#eee)}
-    .cal-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px}
-    .cal-dow{font-size:9px;font-weight:700;text-align:center;color:var(--secondary-text-color,#555);padding:2px 0}
-    .cal-day{font-size:11px;text-align:center;padding:4px 2px;border-radius:4px;cursor:pointer;color:var(--primary-text-color,#eee);border:none;background:none}
-    .cal-day:hover{background:rgba(77,196,154,0.15)}
-    .cal-day--today{border:1px solid rgba(77,196,154,0.4);color:#4dc49a}
-    .cal-day--sel{background:#1a8a64;color:#fff;font-weight:700}
-    .cal-day--empty{cursor:default}
-    .cal-day--past{color:var(--secondary-text-color,#444);cursor:default}
-    /* one-off scheduler */
-    .oneoff-wrap{margin:0 6px 6px;border-radius:9px;border:1px solid rgba(77,196,154,0.2);background:rgba(26,138,100,0.05);overflow:hidden}
-    .oneoff-hdr{display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(77,196,154,0.1);gap:8px}
-    .oneoff-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#4dc49a;flex:1}
-    .oneoff-body{padding:10px}
-    .oneoff-datetime{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap}
-    .oneoff-num{width:36px;font-size:15px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:3px 2px;outline:none;text-align:center;-moz-appearance:textfield}
-    .oneoff-num::-webkit-inner-spin-button,.oneoff-num::-webkit-outer-spin-button{-webkit-appearance:none}
-    .oneoff-sep{font-size:14px;font-weight:700;color:var(--secondary-text-color,#666)}
-    .oneoff-ok{background:#1a8a64;border:none;border-radius:5px;color:#fff;font-size:12px;font-weight:700;padding:4px 8px;cursor:pointer}
-    .oneoff-zones{display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:10px}
-    .oneoff-zone{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:6px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);font-size:12px;color:var(--primary-text-color,#eee);cursor:pointer}
-    .oneoff-zone input[type=checkbox]{accent-color:#1a8a64;cursor:pointer;flex-shrink:0}
-    .oneoff-zone-dur{width:32px;font-size:12px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid rgba(26,138,100,0.3);border-radius:4px;color:var(--primary-text-color,#eee);padding:2px 3px;outline:none;text-align:center;-moz-appearance:textfield;margin-left:auto}
-    .oneoff-zone-dur::-webkit-inner-spin-button,.oneoff-zone-dur::-webkit-outer-spin-button{-webkit-appearance:none}
-    .oneoff-status{font-size:11px;color:var(--secondary-text-color,#666);text-align:center;padding:4px 0}
     .sched-wrap{margin:0 6px 6px;border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);overflow:hidden}
     .sched-hdr{display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,0.05)}
     .sched-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--primary-text-color,#f0f0f0);flex:1}
@@ -699,14 +480,9 @@ class SprinklerDashCardV2 extends HTMLElement {
     .sched-time-wrap{display:flex;flex-direction:column;align-items:flex-end;gap:2px;flex-shrink:0}
     .sched-time{font-size:20px;font-weight:700;color:var(--primary-text-color,#f0f0f0);cursor:pointer;letter-spacing:.02em;line-height:1;padding:2px 4px;border-radius:5px;border:1px solid transparent;transition:border-color .15s,background .15s;min-width:60px;text-align:right}
     .sched-time:hover{border-color:rgba(77,196,154,0.4);background:rgba(26,138,100,0.1)}
-    .sched-time-edit{display:flex;align-items:center;gap:3px}
-    .sched-time-num{width:34px;font-size:16px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:3px 2px;outline:none;text-align:center;-moz-appearance:textfield}
-    .sched-time-num::-webkit-inner-spin-button,.sched-time-num::-webkit-outer-spin-button{-webkit-appearance:none}
-    .sched-time-sep{font-size:16px;font-weight:700;color:var(--primary-text-color,#f0f0f0)}
-    .sched-time-ok{background:#1a8a64;border:none;border-radius:5px;color:#fff;font-size:12px;font-weight:700;padding:4px 7px;cursor:pointer}
-    .sched-time-x{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.1);border-radius:5px;color:var(--secondary-text-color,#aaa);font-size:12px;font-weight:600;padding:4px 6px;cursor:pointer}
-    .sched-next{font-size:12px;color:#fff;font-weight:700}
-    .sched-next--on{color:#fff}
+    .sched-time input[type=time]{width:74px;font-size:15px;font-weight:700;background:rgba(26,138,100,0.15);border:1px solid #1a8a64;border-radius:5px;color:var(--primary-text-color,#f0f0f0);padding:2px 4px;outline:none;text-align:center}
+    .sched-next{font-size:11px;color:var(--secondary-text-color,#666)}
+    .sched-next--on{color:#4dc49a}
     /* CONFIG PANEL — no overflow:hidden so dropdowns escape */
     .cfg-panel{display:none;border-top:1px solid rgba(255,255,255,0.06);flex-direction:column;max-height:70vh}
     .cfg-panel--open{display:flex}
@@ -844,47 +620,12 @@ class SprinklerDashCardV2 extends HTMLElement {
       <div class="lastrun-box">
         <div class="lastrun-hdr">
           <h3>🕐 Last Run</h3>
-          <button class="lastrun-close-btn" id="lastrun-refresh" style="margin-right:4px">↻</button>
           <button class="lastrun-close-btn" id="lastrun-close">Close</button>
         </div>
         <div class="lastrun-body" id="lastrun-body">No run recorded yet.</div>
       </div>
     </div>
     <div class="cfg-panel" id="cfg-panel"></div>
-    <div class="zexpand-modal" id="zexpand-modal">
-      <div class="zexpand-box">
-        <div class="zexpand-hdr">
-          <span class="zexpand-name" id="zexpand-name">Zone</span>
-          <button class="zexpand-close" id="zexpand-close">✕ Close</button>
-        </div>
-        <div class="zexpand-body">
-          <div class="zexpand-toggle-row">
-            <span class="zexpand-toggle-lbl" id="zexpand-status">Ready</span>
-            <button class="zexpand-toggle" id="zexpand-toggle"><div class="zexpand-toggle-thumb"></div></button>
-          </div>
-          <div class="zexpand-prog-track"><div class="zexpand-prog-fill" id="zexpand-prog"></div></div>
-          <div class="zexpand-dur-row">
-            <span class="zexpand-dur-lbl">Duration</span>
-            <button class="zexpand-dur-btn" id="zexpand-dur-m">−</button>
-            <input type="number" class="zexpand-dur-inp" id="zexpand-dur-inp" min="0" max="120" step="1">
-            <span class="zexpand-dur-unit">min</span>
-            <button class="zexpand-dur-btn" id="zexpand-dur-p">+</button>
-          </div>
-          <div class="zexpand-row">
-            <span class="zexpand-row-lbl">Last run</span>
-            <span class="zexpand-last" id="zexpand-last">—</span>
-          </div>
-          <div class="zexpand-row">
-            <span class="zexpand-row-lbl">Skip next run</span>
-            <button class="zexpand-skip-btn" id="zexpand-skip">Skip</button>
-          </div>
-          <div class="zexpand-row">
-            <span class="zexpand-row-lbl">Include in schedule</span>
-            <input type="checkbox" class="zexpand-sched-cb" id="zexpand-sched-cb">
-          </div>
-        </div>
-      </div>
-    </div>
     <div class="readme-modal" id="readme-modal">
       <div class="readme-box">
         <div class="readme-sticky">
@@ -895,68 +636,50 @@ class SprinklerDashCardV2 extends HTMLElement {
           </div>
         </div>
         <div class="readme-body">
-        <h4>Step 1 — Install via HACS</h4>
-        <p>Search for <b>Sprinkler Dash Card</b> in HACS → Frontend. Install and hard-refresh. Then add the card:</p>
+        <h4>Step 1 — Install the card</h4>
         <ul>
-          <li>YAML: <code>type: custom:sprinkler-dash-card-v2</code></li>
-          <li>Or use the card picker to find <b>Sprinkler Dash Card</b></li>
+          <li>Copy <code>sprinkler-dash-card.js</code> to <code>/config/www/</code></li>
+          <li>Go to <b>Settings → Dashboards → Resources</b></li>
+          <li>Add <code>/local/sprinkler-dash-card.js</code> as type <b>JavaScript Module</b></li>
+          <li>Add the card: <code>type: custom:sprinkler-dash-card-v2</code></li>
         </ul>
 
         <h4>Step 2 — Create duration helpers</h4>
         <p>Go to <b>Settings → Helpers → Add → Number</b> and create one per zone:</p>
         <ul>
           <li><code>input_number.valve_1_time</code> through <code>input_number.valve_8_time</code></li>
-          <li>Settings: min 0, max 60, step 1, unit <b>min</b></li>
-          <li>Create up to <code>valve_12_time</code> if using up to 12 zones</li>
+          <li>Settings: min 0, max 60, step 5, unit <b>min</b></li>
+          <li>Add up to <code>valve_10_time</code> if using more than 8 zones</li>
         </ul>
 
         <h4>Step 3 — Install Scheduler integration</h4>
-        <p>Install <b>Scheduler Component</b> via HACS (Integration category). The card auto-creates <code>script.sprinkler</code> and the Scheduler entity on first load — defaults to Mon/Wed/Fri at 06:00. Adjust in the Schedule section on the card.</p>
+        <p>Install <b>Scheduler Component</b> via HACS (Integration category). That's all — the card automatically creates both <code>script.sprinkler</code> and the scheduler entity on first load. The scheduler defaults to Mon/Wed/Fri at 06:00 — adjust the days and time using the Schedule section on the card.</p>
 
         <h4>Step 4 — Configure zones in ⚙️</h4>
-        <p>Open settings (⚙️). Set <b>Active Zones</b> (1–12). For each zone set the <b>Switch Entity</b> (valve switch) and <b>Duration Entity</b> (<code>input_number</code> from Step 2). Drag <b>⠿</b> to reorder. Tick the checkbox to include a zone in scheduled runs. Tap 💾 Save when done.</p>
+        <p>Tap the gear icon → <b>Active Zones</b> to set how many zones to show. For each zone set the <b>Switch Entity</b> (your valve switch) and <b>Duration Entity</b> (the input_number from Step 2). Use the search field to find entities. Drag <b>⠿</b> to reorder. Tick the checkbox to include a zone in the schedule.</p>
 
         <h4>Step 5 — Configure settings in ⚙️</h4>
         <ul>
           <li><b>Nav path</b>: where tapping the title navigates (e.g. <code>/lovelace</code>)</li>
           <li><b>Rain sensor</b>: precipitation sensor in mm</li>
-          <li><b>Rain limit</b>: mm above which schedule auto-disables (slot turns yellow)</li>
-          <li><b>Rain restore</b>: hours after which schedule re-enables when rain clears (default 48h)</li>
+          <li><b>Rain limit</b>: mm above which schedule auto-disables (turns yellow)</li>
           <li><b>Weather</b>: any <code>weather.*</code> entity</li>
-          <li><b>Jojo sensor</b>: water tank litres sensor</li>
-          <li><b>Jojo low %</b>: tank % below which all zones shut off (slot turns red)</li>
+          <li><b>Jojo sensor</b>: water tank litres entity</li>
+          <li><b>Jojo low %</b>: tank level below which all zones shut off immediately (turns red)</li>
           <li><b>Schedule switch</b>: the <code>switch.schedule_*</code> entity from Scheduler</li>
         </ul>
 
         <h4>Step 6 — Configure info bar in ⚙️</h4>
-        <p>4 slots in the header. Each slot has an enable checkbox, label, MDI icon (searchable with live preview), and up to 2 sensors. Tap any slot to open the entity detail. Layout auto-adjusts: 1=full, 2=50/50, 3=3-col, 4=2×2. Tap 💾 Save when done.</p>
+        <p>4 slots are available. Each slot has an enable checkbox, label, MDI icon (searchable), and up to 2 sensors. Tap any info bar item to open the entity detail. Layout auto-adjusts: 1=full, 2=50/50, 3=3-col, 4=2×2.</p>
 
         <h4>Step 7 — Automation rules in ⚙️</h4>
-        <p>At the bottom of settings, enable or disable rules:</p>
-        <ul>
-          <li><b>Confirm before activating</b>: confirmation popup on all zone/schedule actions</li>
-          <li><b>Rain: Auto-disable schedule</b>: turns off schedule when rain exceeds limit</li>
-          <li><b>Rain: Auto-restore schedule</b>: re-enables schedule after rain clears (48h default)</li>
-          <li><b>Jojo: Low-level zone shutoff</b>: closes all valves when tank drops below low %</li>
-        </ul>
+        <p>Enable or disable the built-in rules at the bottom of settings: <b>Confirm before activating</b>, <b>Rain auto-disable</b>, and <b>Jojo low-level shutoff</b>. Each rule shows its current threshold.</p>
 
-        <h4>Buttons</h4>
-        <ul>
-          <li><b>Start Schedule</b>: manually runs all schedule-enabled zones in sequence</li>
-          <li><b>Stop Schedule</b>: appears while running — stops the script and closes all valves</li>
-          <li><b>Last Run</b>: shows a popup with the previous run's timestamp, zones watered, durations, and any skipped zones</li>
-        </ul>
-
-        <h4>Zone features</h4>
-        <ul>
-          <li><b>Toggle</b>: manually turn a zone on — shows a duration picker so it auto-stops after the set time</li>
-          <li><b>Skip next run</b>: tap the 📅 calendar icon on a zone to skip it from the next scheduled run only — self-clearing after the run</li>
-          <li><b>Last run badge</b>: shows "last: Xm/Xh/Xd ago" on each tile</li>
-          <li><b>Run order</b>: while the schedule runs, sequence badges show 🟢 current, ✓ done, 🟡 queued</li>
-        </ul>
+        <h4>Skip next run (per zone)</h4>
+        <p>Tap the <b>calendar-remove</b> icon next to any zone name to mark it as skipped for the next run only. The zone gets an amber dashed border and shows "Skip next run". No confirmation needed — tap again to cancel. When the schedule (or Start Schedule) next runs, that zone is bypassed and the skip automatically clears itself — no setup required, the card creates a small helper for this on first load.</p>
 
         <h4>Schedule section</h4>
-        <p>Toggle enables/disables the schedule. Tap day pills to change run days. Tap the time to edit hours and minutes (tap ✓ to confirm). The countdown shows "Tonight", "Tomorrow", or "in Xh Xm" for the next run.</p>
+        <p>The toggle enables/disables the schedule. Tap day pills to toggle run days. Tap the time to edit it. The countdown shows when the schedule next fires.</p>
         </div>
       </div>
     </div>
@@ -983,25 +706,13 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._showConfig = !this._showConfig;
       r.getElementById('cfg-btn').classList.toggle('cfg-btn--active', this._showConfig);
       r.getElementById('cfg-panel').classList.toggle('cfg-panel--open', this._showConfig);
-      if (this._showConfig) {
-        this._cfgSnapshot = JSON.stringify(this._cfg);
-        this._renderConfigPanel();
-        setTimeout(() => {
-          const panel = this.shadowRoot.getElementById('cfg-panel');
-          if (panel) panel.scrollIntoView({behavior:'smooth', block:'start'});
-        }, 50);
-      }
+      if (this._showConfig) this._renderConfigPanel();
     });
     r.getElementById('btn-start').addEventListener('click', () => this._startSchedule());
     r.getElementById('btn-stop-sched').addEventListener('click', () => this._stopSchedule());
     r.getElementById('btn-lastrun').addEventListener('click', () => this._showLastRun());
     r.getElementById('lastrun-close').addEventListener('click', () => {
       r.getElementById('lastrun-modal').classList.remove('lastrun-modal--open');
-    });
-    r.getElementById('lastrun-refresh').addEventListener('click', () => this._showLastRun());
-    r.getElementById('zexpand-close').addEventListener('click', () => {
-      r.getElementById('zexpand-modal').classList.remove('zexpand-modal--open');
-      clearInterval(this._expandTimer);
     });
     r.getElementById('sched-toggle').addEventListener('click', () => {
       const e = this._cfg.schedule_entity; if (!e) return;
@@ -1021,37 +732,12 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
     const timeEl = r.getElementById('sched-time');
     timeEl.addEventListener('click', () => {
-      if (this._editingTime) return;
-      this._editingTime = true;
-      const cur = timeEl.dataset.rawTime || timeEl.textContent.trim() || '06:00';
-      const [curH, curM] = cur.split(':').map(Number);
-      timeEl.innerHTML = '';
-      const wrap = document.createElement('div'); wrap.className='sched-time-edit';
-      const hInp = document.createElement('input'); hInp.type='number'; hInp.className='sched-time-num';
-      hInp.min=0; hInp.max=23; hInp.value=String(curH).padStart(2,'0');
-      const sep = document.createElement('span'); sep.className='sched-time-sep'; sep.textContent=':';
-      const mInp = document.createElement('input'); mInp.type='number'; mInp.className='sched-time-num';
-      mInp.min=0; mInp.max=59; mInp.value=String(curM).padStart(2,'0');
-      const okBtn = document.createElement('button'); okBtn.className='sched-time-ok'; okBtn.textContent='✓';
-      const xBtn = document.createElement('button'); xBtn.className='sched-time-x'; xBtn.textContent='✕';
-      const doSave = () => {
-        this._editingTime=false;
-        const h=Math.min(23,Math.max(0,parseInt(hInp.value)||0));
-        const m=Math.min(59,Math.max(0,parseInt(mInp.value)||0));
-        const val=String(h).padStart(2,'0')+':'+String(m).padStart(2,'0');
-        timeEl.innerHTML=''; timeEl.textContent=val; timeEl.dataset.rawTime=val;
-        if(val!==cur) this._saveTime(val);
-      };
-      const doCancel = () => { this._editingTime=false; timeEl.innerHTML=''; timeEl.textContent=cur; };
-      okBtn.addEventListener('click',(e)=>{e.stopPropagation();doSave();});
-      xBtn.addEventListener('click',(e)=>{e.stopPropagation();doCancel();});
-      hInp.addEventListener('input',()=>{if(parseInt(hInp.value)>23)hInp.value='23';});
-      mInp.addEventListener('input',()=>{if(parseInt(mInp.value)>59)mInp.value='59';});
-      hInp.setAttribute('inputmode','numeric');
-      mInp.setAttribute('inputmode','numeric');
-      wrap.append(hInp,sep,mInp,okBtn,xBtn);
-      timeEl.appendChild(wrap);
-      setTimeout(() => { timeEl.scrollIntoView({behavior:'smooth',block:'center'}); hInp.focus(); hInp.select(); }, 100);
+      if (this._editingTime) return; this._editingTime=true;
+      const cur = timeEl.textContent.trim();
+      const inp = document.createElement('input'); inp.type='time'; inp.value=cur;
+      timeEl.innerHTML=''; timeEl.appendChild(inp); inp.focus();
+      const save = () => { this._editingTime=false; const val=inp.value; timeEl.textContent=val||cur; if (val&&val!==cur) this._saveTime(val); };
+      inp.addEventListener('blur', save); inp.addEventListener('change', save);
     });
     r.getElementById('readme-close').addEventListener('click', () => {
       r.getElementById('readme-modal').classList.remove('readme-modal--open');
@@ -1094,7 +780,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const dr=document.createElement('div'); dr.className='zdur-row';
       const dl=document.createElement('span'); dl.className='zdur-lbl'; dl.textContent='Min';
       const di=document.createElement('input'); di.type='number'; di.className='zdur-input';
-      di.id='zdur-'+i; di.min=0; di.max=60; di.step=1; di.value=10;
+      di.id='zdur-'+i; di.min=0; di.max=60; di.step=5; di.value=10;
       const du=document.createElement('span'); du.className='zdur-unit'; du.textContent='min';
       const db=document.createElement('div'); db.className='zdur-btns';
       const bm=document.createElement('button'); bm.className='zdur-btn'; bm.textContent='-';
@@ -1102,11 +788,6 @@ class SprinklerDashCardV2 extends HTMLElement {
       db.append(bm,bp); dr.append(dl,di,du,db);
       const zlast=document.createElement('div'); zlast.className='zlast'; zlast.id='zlast-'+i;
       el.append(top,pt,stat,zlast,dv,dr); grid.appendChild(el);
-      el.addEventListener('click',(ev)=>{
-        const tag=ev.target.tagName.toLowerCase();
-        if(['button','input','ha-icon'].includes(tag)||ev.target.closest('.zskip,.ztoggle,.zdur-row')) return;
-        this._openZoneExpand(i);
-      });
       skip.addEventListener('click',()=>{
         if (!z.sw) return;
         this._toggleSkip(z);
@@ -1114,34 +795,17 @@ class SprinklerDashCardV2 extends HTMLElement {
       tog.addEventListener('click',()=>{
         if (!z.sw) return;
         const isOn = this._hass.states[z.sw]?.state==='on';
-        if (isOn) {
-          if (this._manualTimers) { clearTimeout(this._manualTimers[i]); delete this._manualTimers[i]; }
-          this._confirm(z.name, `Turn off ${z.name}?`, 'confirm-btn--danger').then(ok => {
-            if (!ok) return;
-            this._svc('switch','turn_off',{entity_id:z.sw});
-            this._recordManualRun(z.sw);
-          });
-        } else {
-          const defaultDur = z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||10)) : 10;
-          this._confirmWithTimer(z.name, `Turn on ${z.name} for:`, defaultDur).then(result => {
-            if (!result) return;
-            this._svc('switch','turn_on',{entity_id:z.sw});
-            if (!this._manualTimers) this._manualTimers = {};
-            if (result.dur > 0) {
-              this._recordManualStop(z.sw, result.dur);
-              this._manualTimers[i] = setTimeout(() => {
-                this._svc('switch','turn_off',{entity_id:z.sw});
-                this._recordManualRun(z.sw);
-                delete this._manualTimers[i];
-              }, result.dur * 60 * 1000);
-            }
-          });
-        }
+        const action = isOn ? 'turn_off' : 'turn_on';
+        const msg = isOn ? `Turn off ${z.name}?` : `Turn on ${z.name}?`;
+        const okClass = isOn ? 'confirm-btn--danger' : 'confirm-btn--ok';
+        this._confirm(z.name, msg, okClass).then(ok => {
+          if (ok) this._svc('switch', action, {entity_id:z.sw});
+        });
       });
       const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); if(this._onTimes[i])this._onTimes[i].totalSecs=val*60; };
       di.addEventListener('change',()=>applyDur(parseFloat(di.value)||0));
-      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-1));
-      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+1));
+      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-5));
+      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+5));
     });
   }
 
@@ -1303,35 +967,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     closeBtn.style.cssText='padding:7px 12px;border-radius:7px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.06);color:var(--secondary-text-color,#999);font-size:12px;font-weight:600;cursor:pointer';
     closeBtn.textContent='Close';
     closeBtn.addEventListener('click',()=>{
-      // check for unsaved changes by comparing current panel values to snapshot
-      const _snap = this._cfgSnapshot ? JSON.parse(this._cfgSnapshot) : null;
-      let dirty = false;
-      if (_snap) {
-        // check text inputs against snapshot
-        panel.querySelectorAll('input[data-cfg-key]').forEach(inp => {
-          const key = inp.dataset.cfgKey;
-          if (inp.type === 'number' && Math.abs(parseFloat(inp.value) - parseFloat(_snap[key]||0)) > 0.01) dirty = true;
-          if (inp.type === 'text' && inp.value !== (_snap[key]||'')) dirty = true;
-        });
-        // check zone names/entities
-        panel.querySelectorAll('input[data-zone-name-idx]').forEach(inp => {
-          const idx = parseInt(inp.dataset.zoneNameIdx);
-          if (inp.value !== (_snap.zones?.[idx]?.name||'')) dirty = true;
-        });
-      }
-      if (dirty) {
-        closeBtn.textContent = '⚠ Unsaved changes — Save first or tap again to discard';
-        closeBtn.style.color = '#ffb43c';
-        closeBtn.style.borderColor = 'rgba(255,180,60,0.4)';
-        closeBtn._warnShown = true;
-        setTimeout(() => {
-          closeBtn.textContent = 'Close';
-          closeBtn.style.color = '';
-          closeBtn.style.borderColor = '';
-          closeBtn._warnShown = false;
-        }, 3000);
-        return;
-      }
       this._showConfig=false;
       this.shadowRoot.getElementById('cfg-btn').classList.remove('cfg-btn--active');
       panel.classList.remove('cfg-panel--open');
@@ -1346,17 +981,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
 
     stickyHdr.append(saveBtn, closeBtn, readmeBtn);
-    const _ver=document.createElement('span');
-    _ver.style.cssText='font-size:10px;color:rgba(255,255,255,0.5);margin-left:auto;padding-left:8px;white-space:nowrap';
-    _ver.textContent='v'+CARD_VERSION;
-    stickyHdr.appendChild(_ver);
-    const _bmc=document.createElement('a');
-    _bmc.href='https://buymeacoffee.com/hybridrcg'; _bmc.target='_blank'; _bmc.rel='noopener';
-    _bmc.style.cssText='margin-left:6px;flex-shrink:0;display:flex;align-items:center';
-    const _bmcImg=document.createElement('img');
-    _bmcImg.src='https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png';
-    _bmcImg.alt='Buy Me A Coffee'; _bmcImg.style.cssText='height:20px;border-radius:4px';
-    _bmc.appendChild(_bmcImg); stickyHdr.appendChild(_bmc);
     panel.appendChild(stickyHdr);
 
     // ── Scrollable body ──
@@ -1463,94 +1087,14 @@ class SprinklerDashCardV2 extends HTMLElement {
     const rtHint=document.createElement('span'); rtHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rtHint.textContent='mm → disable sched';
     rtRow.append(rtLbl,rtInp,rtHint); slist.appendChild(rtRow);
 
-    // seasonal rain restore
-    const month = new Date().getMonth();
-    const isSummer = month >= 9 || month <= 2;
-    const seasonLabel = isSummer ? '☀️ Summer (Oct–Mar)' : '❄️ Winter (Apr–Sep)';
-    const isOverride = this._cfg.rain_restore_override === true;
-
-    const rrSection = document.createElement('div');
-    rrSection.style.cssText='border:1px solid rgba(255,255,255,0.07);border-radius:7px;padding:7px 8px;margin-bottom:4px;background:rgba(255,255,255,0.02)';
-
-    const rrTitle = document.createElement('div');
-    rrTitle.style.cssText='font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#4dc49a;margin-bottom:6px';
-    rrTitle.textContent='Rain restore — ' + seasonLabel + (isOverride ? ' (manual override)' : ' (auto)');
-    rrSection.appendChild(rrTitle);
-
-    // Summer hours
-    const rsmRow=document.createElement('div'); rsmRow.className='cfg-field-row'; rsmRow.style.marginBottom='4px';
-    const rsLbl=document.createElement('label'); rsLbl.className='cfg-field-lbl'; rsLbl.textContent='☀️ Summer';
-    const rsInp=document.createElement('input'); rsInp.type='number'; rsInp.className='cfg-field-input';
-    rsInp.value=this._cfg.rain_restore_summer||24; rsInp.placeholder='24'; rsInp.min=1; rsInp.max=168;
-    rsInp.dataset.cfgKey='rain_restore_summer';
-    const rsHint=document.createElement('span'); rsHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rsHint.textContent='h (Oct–Mar)';
-    rsmRow.append(rsLbl,rsInp,rsHint); rrSection.appendChild(rsmRow);
-
-    // Winter hours
-    const rwRow=document.createElement('div'); rwRow.className='cfg-field-row'; rwRow.style.marginBottom='4px';
-    const rwLbl=document.createElement('label'); rwLbl.className='cfg-field-lbl'; rwLbl.textContent='❄️ Winter';
-    const rwInp=document.createElement('input'); rwInp.type='number'; rwInp.className='cfg-field-input';
-    rwInp.value=this._cfg.rain_restore_winter||48; rwInp.placeholder='48'; rwInp.min=1; rwInp.max=168;
-    rwInp.dataset.cfgKey='rain_restore_winter';
-    const rwHint=document.createElement('span'); rwHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rwHint.textContent='h (Apr–Sep)';
-    rwRow.append(rwLbl,rwInp,rwHint); rrSection.appendChild(rwRow);
-
-    // Override hours
-    const roRow=document.createElement('div'); roRow.className='cfg-field-row'; roRow.style.marginBottom='6px';
-    const roLbl=document.createElement('label'); roLbl.className='cfg-field-lbl'; roLbl.textContent='Override';
-    const roInp=document.createElement('input'); roInp.type='number'; roInp.className='cfg-field-input';
-    roInp.value=this._cfg.rain_restore_hours||48; roInp.placeholder='48'; roInp.min=1; roInp.max=168;
-    roInp.dataset.cfgKey='rain_restore_hours';
-    roInp.style.opacity = isOverride ? '1' : '0.4';
-    const roHint=document.createElement('span'); roHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; roHint.textContent='h (manual)';
-    roInp.addEventListener('input', () => {
-      this._cfg.rain_restore_override = true;
-      this._cfg.rain_restore_hours = parseFloat(roInp.value)||48;
-      this._saveConfig({rain_restore_override:true, rain_restore_hours:this._cfg.rain_restore_hours});
-      roInp.style.opacity='1'; rrTitle.textContent='Rain restore — (manual override)';
-    });
-    roRow.append(roLbl,roInp,roHint); rrSection.appendChild(roRow);
-
-    // Reset buttons
-    const btnRow=document.createElement('div'); btnRow.style.cssText='display:grid;grid-template-columns:1fr 1fr;gap:5px';
-    const btnS=document.createElement('button');
-    btnS.style.cssText='padding:5px;border-radius:6px;border:1px solid rgba(255,180,60,0.3);background:rgba(255,180,60,0.1);color:#ffb43c;font-size:11px;font-weight:600;cursor:pointer';
-    btnS.textContent='↺ Reset Summer';
-    btnS.addEventListener('click',()=>{
-      const h = parseFloat(rsInp.value)||24;
-      roInp.value=h; roInp.style.opacity='0.4';
-      this._cfg.rain_restore_override=false; this._cfg.rain_restore_hours=h;
-      this._saveConfig({rain_restore_override:false,rain_restore_hours:h});
-      rrTitle.textContent='Rain restore — ☀️ Summer (Oct–Mar) (auto)';
-    });
-    const btnW=document.createElement('button');
-    btnW.style.cssText='padding:5px;border-radius:6px;border:1px solid rgba(100,150,255,0.3);background:rgba(100,150,255,0.1);color:#7eb4ff;font-size:11px;font-weight:600;cursor:pointer';
-    btnW.textContent='↺ Reset Winter';
-    btnW.addEventListener('click',()=>{
-      const h = parseFloat(rwInp.value)||48;
-      roInp.value=h; roInp.style.opacity='0.4';
-      this._cfg.rain_restore_override=false; this._cfg.rain_restore_hours=h;
-      this._saveConfig({rain_restore_override:false,rain_restore_hours:h});
-      rrTitle.textContent='Rain restore — ❄️ Winter (Apr–Sep) (auto)';
-    });
-    btnRow.append(btnS,btnW); rrSection.appendChild(btnRow);
-    slist.appendChild(rrSection);
-
-    // rain status sensor
-    const rstRow=document.createElement('div'); rstRow.className='cfg-field-row';
-    const rstLbl=document.createElement('label'); rstLbl.className='cfg-field-lbl'; rstLbl.textContent='Rain status';
-    const rstWrap=this._makeEntityInput(this._cfg.rain_status_sensor||'',(val)=>{ this._saveConfig({rain_status_sensor:val}); });
-    const rstHint=document.createElement('span'); rstHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rstHint.textContent='sensor (Dry=clear)';
-    rstRow.append(rstLbl,rstWrap,rstHint); slist.appendChild(rstRow);
-
-    // tick mark duration
-    const tkRow=document.createElement('div'); tkRow.className='cfg-field-row';
-    const tkLbl=document.createElement('label'); tkLbl.className='cfg-field-lbl'; tkLbl.textContent='Tick duration';
-    const tkInp=document.createElement('input'); tkInp.type='number'; tkInp.className='cfg-field-input';
-    tkInp.value=this._cfg.tick_hours||3; tkInp.placeholder='3'; tkInp.min=1; tkInp.max=24;
-    tkInp.dataset.cfgKey='tick_hours';
-    const tkHint=document.createElement('span'); tkHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; tkHint.textContent='h → show ✓ after run';
-    tkRow.append(tkLbl,tkInp,tkHint); slist.appendChild(tkRow);
+    // rain restore hours
+    const rrRow=document.createElement('div'); rrRow.className='cfg-field-row';
+    const rrLbl=document.createElement('label'); rrLbl.className='cfg-field-lbl'; rrLbl.textContent='Rain restore';
+    const rrInp=document.createElement('input'); rrInp.type='number'; rrInp.className='cfg-field-input';
+    rrInp.value=this._cfg.rain_restore_hours||48; rrInp.placeholder='48'; rrInp.min=1; rrInp.max=168;
+    rrInp.dataset.cfgKey='rain_restore_hours';
+    const rrHint=document.createElement('span'); rrHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; rrHint.textContent='h → re-enable sched';
+    rrRow.append(rrLbl,rrInp,rrHint); slist.appendChild(rrRow);
 
     // jojo low %
     const jlRow=document.createElement('div'); jlRow.className='cfg-field-row';
@@ -1688,7 +1232,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       ruleEl.append(cb,txt); s5.appendChild(ruleEl);
     });
 
-    body.append(s3,s4,s5,s2);
+    body.append(s2,s3,s4,s5);
   }
 
   _doSave(btn) {
@@ -1705,12 +1249,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (rtEl) this._cfg.rain_threshold=parseFloat(rtEl.value)||5;
     const rrEl=panel.querySelector('[data-cfg-key="rain_restore_hours"]');
     if (rrEl) this._cfg.rain_restore_hours=parseFloat(rrEl.value)||48;
-    const rsEl=panel.querySelector('[data-cfg-key="rain_restore_summer"]');
-    if (rsEl) this._cfg.rain_restore_summer=parseFloat(rsEl.value)||24;
-    const rwEl=panel.querySelector('[data-cfg-key="rain_restore_winter"]');
-    if (rwEl) this._cfg.rain_restore_winter=parseFloat(rwEl.value)||48;
-    const tkEl=panel.querySelector('[data-cfg-key="tick_hours"]');
-    if (tkEl) this._cfg.tick_hours=parseFloat(tkEl.value)||3;
     const jlEl=panel.querySelector('[data-cfg-key="jojo_low_pct"]');
     if (jlEl) this._cfg.jojo_low_pct=parseFloat(jlEl.value)||35;
 
@@ -1785,488 +1323,62 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
   }
 
-  _openZoneExpand(i) {
-    const z = this._activeZones()[i];
-    if (!z) return;
-    const r = this.shadowRoot;
-    this._expandIdx = i;
-    r.getElementById('zexpand-name').textContent = z.name;
-    const modal = r.getElementById('zexpand-modal');
-    modal.classList.add('zexpand-modal--open');
-
-    const tog = r.getElementById('zexpand-toggle');
-    const stat = r.getElementById('zexpand-status');
-    const prog = r.getElementById('zexpand-prog');
-    const durInp = r.getElementById('zexpand-dur-inp');
-    const lastEl = r.getElementById('zexpand-last');
-    const skipBtn = r.getElementById('zexpand-skip');
-    const schedCb = r.getElementById('zexpand-sched-cb');
-
-    // set duration
-    const durVal = z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||10)) : 10;
-    durInp.value = durVal;
-
-    // set schedule checkbox
-    schedCb.checked = z.schedule_enabled !== false;
-    schedCb.onchange = () => {
-      const zones = JSON.parse(JSON.stringify(this._cfg.zones));
-      zones[this._cfg.zones.indexOf(this._cfg.zones.find(zz=>zz.sw===z.sw))].schedule_enabled = schedCb.checked;
-      this._saveConfig({zones});
-    };
-
-    // dur buttons
-    r.getElementById('zexpand-dur-m').onclick = () => {
-      const v = Math.max(0,parseInt(durInp.value||0)-1); durInp.value=v;
-      if(z.dur) this._svc('input_number','set_value',{entity_id:z.dur,value:v});
-    };
-    r.getElementById('zexpand-dur-p').onclick = () => {
-      const v = Math.min(120,parseInt(durInp.value||0)+1); durInp.value=v;
-      if(z.dur) this._svc('input_number','set_value',{entity_id:z.dur,value:v});
-    };
-    durInp.onchange = () => {
-      const v = Math.min(120,Math.max(0,parseInt(durInp.value||0)));
-      durInp.value=v;
-      if(z.dur) this._svc('input_number','set_value',{entity_id:z.dur,value:v});
-    };
-
-    // toggle
-    tog.onclick = () => {
-      const isOn = this._hass.states[z.sw]?.state==='on';
-      if(!z.sw) return;
-      if (isOn) {
-        if (this._manualTimers) { clearTimeout(this._manualTimers[i]); delete this._manualTimers[i]; }
-        this._confirm(z.name, `Turn off ${z.name}?`, 'confirm-btn--danger').then(ok => {
-          if (!ok) return;
-          this._svc('switch','turn_off',{entity_id:z.sw});
-          this._recordManualRun(z.sw);
-        });
-      } else {
-        const defaultDur = z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||10)) : 10;
-        this._confirmWithTimer(z.name, `Turn on ${z.name} for:`, defaultDur).then(result => {
-          if (!result) return;
-          this._svc('switch','turn_on',{entity_id:z.sw});
-          if (!this._manualTimers) this._manualTimers = {};
-          if (result.dur > 0) {
-            this._recordManualStop(z.sw, result.dur);
-            this._manualTimers[i] = setTimeout(() => {
-              this._svc('switch','turn_off',{entity_id:z.sw});
-              this._recordManualRun(z.sw);
-              delete this._manualTimers[i];
-            }, result.dur * 60 * 1000);
-          }
-        });
-      }
-    };
-
-    // skip button
-    skipBtn.onclick = () => { this._toggleSkip(z); };
-
-    // last run
-    const swState = this._hass.states[z.sw];
-    if (swState?.last_changed) {
-      const mins = Math.round((Date.now()-new Date(swState.last_changed).getTime())/60000);
-      lastEl.textContent = mins < 60 ? mins+'m ago' : mins < 1440 ? Math.floor(mins/60)+'h ago' : Math.floor(mins/1440)+'d ago';
-    } else { lastEl.textContent = '—'; }
-
-    // live update loop
-    clearInterval(this._expandTimer);
-    this._expandTimer = setInterval(() => {
-      const z2 = this._activeZones()[this._expandIdx];
-      if (!z2 || !z2.sw) return;
-      const isOn = this._hass.states[z2.sw]?.state === 'on';
-      tog.className = 'zexpand-toggle' + (isOn?' zexpand-toggle--on':'');
-      tog.innerHTML = '<div class="zexpand-toggle-thumb"></div>';
-      const elapsed = isOn && this._onTimes[this._expandIdx] ? (Date.now()-this._onTimes[this._expandIdx].ts)/1000 : 0;
-      const total = (this._onTimes[this._expandIdx]?.totalSecs) || (durInp.value*60);
-      if (isOn && total > 0) {
-        const pct = Math.min(100,(elapsed/total)*100).toFixed(1);
-        prog.style.width = pct+'%';
-        const rem = Math.max(0,Math.round(total-elapsed));
-        stat.textContent = Math.floor(rem/60)+'m '+String(rem%60).padStart(2,'0')+'s left';
-      } else {
-        prog.style.width = '0%';
-        const skipped = this._isZoneSkipped(z2);
-        stat.textContent = skipped ? 'Skip next run' : 'Ready';
-      }
-      skipBtn.textContent = this._isZoneSkipped(z2) ? 'Cancel skip' : 'Skip next run';
-      skipBtn.className = 'zexpand-skip-btn' + (this._isZoneSkipped(z2)?' zexpand-skip-btn--active':'');
-    }, 500);
-  }
-
-  _toggleOneOff() {
-    this._cfg.oneoff_enabled = !this._cfg.oneoff_enabled;
-    if (this._cfg.oneoff_enabled) {
-      // always reset to now+5min when toggling on
-      const def = new Date(Date.now() + 5*60000);
-      const pad = n => String(n).padStart(2,'0');
-      this._cfg.oneoff_datetime = `${def.getFullYear()}-${pad(def.getMonth()+1)}-${pad(def.getDate())}T${pad(def.getHours())}:${pad(def.getMinutes())}`;
-    }
-    this._saveConfig({oneoff_enabled: this._cfg.oneoff_enabled, oneoff_datetime: this._cfg.oneoff_datetime});
-    // force rebuild so date/time inputs reflect new defaults
-    const dtEl2 = this.shadowRoot?.getElementById('oneoff-datetime');
-    if (dtEl2) delete dtEl2.dataset.built;
-    if (this._cfg.oneoff_enabled) {
-      this._applyOneOffSchedule();
-    } else {
-      this._disableOneOffSchedule();
-    }
-    this._buildOneOff();
-  }
-
-  _buildOneOff() {
-    const r = this.shadowRoot;
-    const tog = r.getElementById('oneoff-toggle');
-    const body = r.getElementById('oneoff-body');
-    const enabled = this._cfg.oneoff_enabled;
-    if (tog) { tog.className = 'stoggle' + (enabled ? ' stoggle--on' : ''); }
-    if (body) body.style.display = enabled ? '' : 'none';
-    if (!enabled) return;
-
-    // build datetime editor
-    const dtEl = r.getElementById('oneoff-datetime');
-    if (!dtEl || dtEl.dataset.built) return;
-    dtEl.dataset.built = '1';
-    dtEl.innerHTML = '';
-
-    const saved = this._cfg.oneoff_datetime || '';
-    const [datePart, timePart] = saved ? saved.split('T') : ['', ''];
-    const [syear, smonth, sday] = datePart ? datePart.split('-').map(Number) : [new Date().getFullYear(), new Date().getMonth()+1, new Date().getDate()+1];
-    const [shour, smin] = timePart ? timePart.split(':').map(Number) : [7, 30];
-
-    const sep = (t) => { const s=document.createElement('span'); s.className='oneoff-sep'; s.textContent=t; return s; };
-    const mk = (min,max,val,ph) => {
-      const inp = document.createElement('input');
-      inp.type='number'; inp.className='oneoff-num'; inp.min=min; inp.max=max;
-      inp.value=String(val).padStart(2,'0'); inp.placeholder=ph;
-      inp.setAttribute('inputmode','numeric');
-      return inp;
-    };
-
-    // date button opens calendar
-    let selYear=syear, selMonth=smonth-1, selDay=sday;
-    const dateBtn=document.createElement('button');
-    dateBtn.style.cssText='padding:5px 10px;border-radius:6px;border:1px solid rgba(77,196,154,0.4);background:rgba(26,138,100,0.15);color:#4dc49a;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap';
-    const updateDateBtn = () => {
-      const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-      dateBtn.textContent=`📅 ${selDay} ${months[selMonth]} ${selYear}`;
-    };
-    updateDateBtn();
-
-    dateBtn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      document.querySelectorAll('.cal-popup').forEach(p=>p.remove());
-      const popup=document.createElement('div'); popup.className='cal-popup';
-      let viewYear=selYear, viewMonth=selMonth;
-      const render = () => {
-        popup.innerHTML='';
-        const months=['January','February','March','April','May','June','July','August','September','October','November','December'];
-        const hdr=document.createElement('div'); hdr.className='cal-hdr';
-        const prev=document.createElement('button'); prev.className='cal-nav'; prev.textContent='‹';
-        prev.onclick=(e)=>{e.stopPropagation();viewMonth--;if(viewMonth<0){viewMonth=11;viewYear--;}render();};
-        const next=document.createElement('button'); next.className='cal-nav'; next.textContent='›';
-        next.onclick=(e)=>{e.stopPropagation();viewMonth++;if(viewMonth>11){viewMonth=0;viewYear++;}render();};
-        const title=document.createElement('span'); title.className='cal-month'; title.textContent=months[viewMonth]+' '+viewYear;
-        hdr.append(prev,title,next); popup.appendChild(hdr);
-        const grid=document.createElement('div'); grid.className='cal-grid';
-        ['Su','Mo','Tu','We','Th','Fr','Sa'].forEach(d=>{const el=document.createElement('div');el.className='cal-dow';el.textContent=d;grid.appendChild(el);});
-        const first=new Date(viewYear,viewMonth,1).getDay();
-        const days=new Date(viewYear,viewMonth+1,0).getDate();
-        const today=new Date();
-        for(let i=0;i<first;i++){const el=document.createElement('button');el.className='cal-day cal-day--empty';el.disabled=true;grid.appendChild(el);}
-        for(let d=1;d<=days;d++){
-          const el=document.createElement('button'); el.className='cal-day'; el.textContent=d;
-          const isPast=new Date(viewYear,viewMonth,d)<new Date(today.getFullYear(),today.getMonth(),today.getDate());
-          if(isPast) el.classList.add('cal-day--past'),el.disabled=true;
-          if(d===today.getDate()&&viewMonth===today.getMonth()&&viewYear===today.getFullYear()) el.classList.add('cal-day--today');
-          if(d===selDay&&viewMonth===selMonth&&viewYear===selYear) el.classList.add('cal-day--sel');
-          el.onclick=(e)=>{e.stopPropagation();selDay=d;selMonth=viewMonth;selYear=viewYear;updateDateBtn();popup.remove();};
-          grid.appendChild(el);
-        }
-        popup.appendChild(grid);
-      };
-      render();
-      // position below button
-      const rect=dateBtn.getBoundingClientRect();
-      const hostRect=this.getBoundingClientRect();
-      popup.style.top=(rect.bottom-hostRect.top+this.scrollTop+4)+'px';
-      popup.style.left=(rect.left-hostRect.left)+'px';
-      this.shadowRoot.appendChild(popup);
-      const close=(e)=>{if(!popup.contains(e.target)&&e.target!==dateBtn){popup.remove();document.removeEventListener('click',close);}};
-      setTimeout(()=>document.addEventListener('click',close),0);
-    });
-
-    // time inputs
-    const hInp=mk(0,23,shour,'HH'), mInp=mk(0,59,smin,'MM');
-
-    const okBtn=document.createElement('button'); okBtn.className='oneoff-ok'; okBtn.textContent='✓ Set';
-    okBtn.addEventListener('click', () => {
-      const d=String(selDay).padStart(2,'0');
-      const mo=String(selMonth+1).padStart(2,'0');
-      const y=selYear;
-      const h=String(Math.min(23,parseInt(hInp.value)||0)).padStart(2,'0');
-      const m=String(Math.min(59,parseInt(mInp.value)||0)).padStart(2,'0');
-      const dt=`${y}-${mo}-${d}T${h}:${m}`;
-      this._cfg.oneoff_datetime=dt;
-      this._saveConfig({oneoff_datetime:dt});
-      this._updateOneOffStatus();
-      if (this._cfg.oneoff_enabled) this._applyOneOffSchedule();
-      okBtn.textContent='✓ Saved'; setTimeout(()=>okBtn.textContent='✓ Set',1500);
-    });
-
-    dtEl.append(dateBtn,sep(' '),hInp,sep(':'),mInp,okBtn);
-
-    // build zone checkboxes
-    const zonesEl = r.getElementById('oneoff-zones');
-    if (zonesEl) {
-      zonesEl.innerHTML='';
-      const savedZones = this._cfg.oneoff_zones || [];
-      this._activeZones().forEach((z,i) => {
-        if (!z.sw) return;
-        const saved = savedZones.find(sz=>sz.sw===z.sw);
-        const checked = saved ? true : false;
-        const dur = saved ? saved.dur : (z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||10)) : 10);
-
-        const wrap=document.createElement('label'); wrap.className='oneoff-zone';
-        const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=checked;
-        const nm=document.createElement('span'); nm.textContent=z.name; nm.style.flex='1';
-        const durInp=document.createElement('input'); durInp.type='number'; durInp.className='oneoff-zone-dur';
-        durInp.min=1; durInp.max=120; durInp.value=dur; durInp.setAttribute('inputmode','numeric');
-        durInp.title='Duration (min)';
-
-        const save = () => {
-          const zones = this._activeZones().filter(zz=>zz.sw).map((zz,ii) => {
-            const cbEl = zonesEl.querySelectorAll('input[type=checkbox]')[ii];
-            const dEl = zonesEl.querySelectorAll('.oneoff-zone-dur')[ii];
-            if (cbEl?.checked) return {sw:zz.sw, name:zz.name, dur:parseInt(dEl?.value||10)};
-            return null;
-          }).filter(Boolean);
-          this._cfg.oneoff_zones=zones;
-          this._saveConfig({oneoff_zones:zones});
-          if (this._cfg.oneoff_enabled) this._applyOneOffSchedule();
-        };
-        cb.addEventListener('change', save);
-        durInp.addEventListener('change', save);
-        wrap.append(cb,nm,durInp);
-        zonesEl.appendChild(wrap);
-      });
-    }
-    this._updateOneOffStatus();
-  }
-
-  _updateOneOffStatus() {
-    const el = this.shadowRoot?.getElementById('oneoff-status');
-    if (!el) return;
-    const dt = this._cfg.oneoff_datetime;
-    const zones = this._cfg.oneoff_zones || [];
-    if (!dt) { el.textContent='Set a date and time above'; el.style.color=''; return; }
-    const d = new Date(dt);
-    const now = new Date();
-    const diff = d - now;
-    const schedRunning = this._hass.states['switch.schedule_sprinkler_oneoff']?.state === 'on';
-    if (diff <= 0 && !schedRunning) {
-      el.textContent='✅ Completed — toggle to schedule another'; el.style.color='#4dc49a'; return;
-    }
-    if (diff <= 0) { el.textContent='⚠️ Date is in the past — set a future date'; el.style.color='#ffb43c'; return; }
-    el.style.color='';
-    const h = Math.floor(diff/3600000), m = Math.floor((diff%3600000)/60000);
-    const days = Math.floor(diff/86400000);
-    const timeStr = dt.substring(11,16);
-    const dayStr = days>0 ? `in ${days}d ${Math.floor((diff%86400000)/3600000)}h` : `in ${h}h ${m}m`;
-    const serverStr = schedRunning ? ' ✓ scheduled server-side' : '';
-    el.textContent = zones.length ? `▶ ${zones.length} zone(s) on ${d.toLocaleDateString([],{weekday:'short',day:'numeric',month:'short'})} at ${timeStr} (${dayStr})${serverStr}` : '⚠️ Select at least one zone';
-  }
-
-  _checkOneOffRun() {
-    // server-side only now — check if scheduler entity fired and clean up
-    const schedE = 'switch.schedule_sprinkler_oneoff';
-    const schedState = this._hass.states[schedE];
-    if (!schedState) return;
-    // if scheduler ran (last_triggered within last 5 min) and script finished, mark as done
-    const lastTriggered = schedState.attributes?.last_triggered || schedState.attributes?.next_trigger;
-    // cleanup is handled by automation.sprinkler_oneoff_cleanup
-  }
-
-  async _applyOneOffSchedule() {
-    const zones = this._cfg.oneoff_zones || [];
-    const dt = this._cfg.oneoff_datetime;
-    if (!zones.length || !dt) return;
-
-    const [datePart, timePart] = dt.split('T');
-    const timeStr = (timePart||'07:30') + ':00';
-    const d = new Date(dt);
-    const dayShort = ['sun','mon','tue','wed','thu','fri','sat'][d.getDay()];
-
-    // Build sequence for the script
-    const sequence = [];
-    zones.forEach(z => {
-      sequence.push({action:'switch.turn_on', target:{entity_id:z.sw}});
-      sequence.push({delay:{minutes:z.dur||10}});
-      sequence.push({action:'switch.turn_off', target:{entity_id:z.sw}});
-    });
-
-    // 1. Create/update script.sprinkler_oneoff via config API
-    try {
-      await this._hass.callApi('POST','config/script/config/sprinkler_oneoff',{
-        alias:'Sprinkler One-Off', icon:'mdi:calendar-clock', mode:'single', sequence,
-      });
-      await this._hass.callService('script','reload');
-    } catch(e) {
-      console.warn('[SprinklerCard] one-off script creation failed:', e);
-    }
-
-    // 2. Create/update scheduler entity
-    const existing = this._hass.states['switch.schedule_sprinkler_oneoff'];
-    if (existing) {
-      this._svc('scheduler','edit',{entity_id:'switch.schedule_sprinkler_oneoff',
-        timeslots:[{start:timeStr,actions:[{service:'script.turn_on',entity_id:'script.sprinkler_oneoff'}]}],
-        weekdays:[dayShort]});
-      this._svc('switch','turn_on',{entity_id:'switch.schedule_sprinkler_oneoff'});
-    } else {
-      this._svc('scheduler','add',{
-        name:'Sprinkler One-Off', weekdays:[dayShort], repeat_type:'single',
-        timeslots:[{start:timeStr,actions:[{service:'script.turn_on',entity_id:'script.sprinkler_oneoff'}]}],
-      });
-    }
-
-    // 3. Create cleanup automation to disable scheduler after run
-    try {
-      await this._hass.callApi('POST','config/automation/config/sprinkler_oneoff_cleanup',{
-        alias:'Sprinkler One-Off Cleanup', mode:'single',
-        triggers:[{trigger:'state',entity_id:'script.sprinkler_oneoff',from:'on',to:'off'}],
-        conditions:[{condition:'template',value_template:"{{ (now() - trigger.from_state.last_changed).total_seconds() > 30 }}"}],
-        actions:[{action:'switch.turn_off',target:{entity_id:'switch.schedule_sprinkler_oneoff'}}],
-      });
-    } catch(e) {
-      // automation may already exist, that is fine
-    }
-  }
-
-  _disableOneOffSchedule() {
-    if (this._hass.states['switch.schedule_sprinkler_oneoff']) {
-      this._svc('switch','turn_off',{entity_id:'switch.schedule_sprinkler_oneoff'});
-    }
-  }
-
   _showLastRun() {
     const r = this.shadowRoot;
     const body = r.getElementById('lastrun-body');
-    r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
-    // collect all run entries from 3 ring-buffer helpers
-    const helpers = [
-      'input_text.sprinkler_run_log_0',
-      'input_text.sprinkler_run_log_1',
-      'input_text.sprinkler_run_log_2',
-    ];
-    const allEntries = [];
-    helpers.forEach(e => {
-      const raw = this._hass.states[e]?.state || '';
-      if (!raw || raw === 'unknown') return;
-      // each helper stores up to 4 runs as JSON array
+    const raw = this._hass.states['input_text.sprinkler_last_run']?.state || '';
+    if (!raw || raw === 'unknown' || raw === '') {
+      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet. Run the schedule to see details here.</p>';
+    } else {
       try {
-        const arr = JSON.parse(raw);
-        if (Array.isArray(arr)) arr.forEach(entry => allEntries.push(entry));
-      } catch(err) {}
-    });
-    if (!allEntries.length) {
-      const setupBtn = document.createElement('button');
-      setupBtn.style.cssText = 'margin-top:8px;width:100%;padding:10px;border-radius:8px;border:none;background:linear-gradient(135deg,#0a5c45,#1a8a64);color:#fff;font-size:13px;font-weight:700;cursor:pointer';
-      setupBtn.textContent = '⚙️ Set up run logging';
-      const msg = document.createElement('p');
-      msg.style.cssText = 'color:var(--secondary-text-color,#666);margin-bottom:10px';
-      msg.textContent = 'No run recorded yet. Set up automatic logging so every schedule run is saved here.';
-      setupBtn.addEventListener('click', () => {
-        setupBtn.textContent = 'Setting up...'; setupBtn.disabled = true;
-        this._createLogAutomation().then(() => {
-          body.innerHTML = '<p style="color:#4dc49a">✓ Run logging is set up! The next schedule run will be recorded here automatically.</p>';
-        }).catch(e => {
-          body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Could not create automation. Please check HA logs.</p>';
-        });
-      });
-      body.innerHTML = '';
-      body.append(msg, setupBtn);
-      return;
+        const data = JSON.parse(raw);
+        const ts = data.ts ? new Date(data.ts).toLocaleString([], {weekday:'long',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+        let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
+        const zones = (data.zones || data.z || []).map(z => ({
+          name: z.name || z.n || '?',
+          dur: z.dur ?? z.d ?? null,
+          skipped: z.skipped || z.s === 1,
+        }));
+        const ran = zones.filter(z=>!z.skipped);
+        const skipped = zones.filter(z=>z.skipped);
+        if (ran.length) {
+          html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
+          ran.forEach(z => {
+            html += `<div class="lastrun-row">
+              <span class="lastrun-zone">💧 ${z.name}</span>
+              <span class="lastrun-dur">${z.dur ? z.dur+'m' : '—'}</span>
+            </div>`;
+          });
+        }
+        if (skipped.length) {
+          html += `<div class="lastrun-section-lbl" style="margin-top:10px">Skipped (${skipped.length})</div>`;
+          skipped.forEach(z => {
+            html += `<div class="lastrun-row">
+              <span class="lastrun-skipped">⏭ ${z.name}</span>
+              <span class="lastrun-dur">—</span>
+            </div>`;
+          });
+        }
+        body.innerHTML = html;
+      } catch(e) {
+        body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Could not read last run data. It may be incomplete — run the schedule again to reset.</p>';
+      }
     }
-    // sort newest first by timestamp
-    allEntries.sort((a,b) => (b.t||'').localeCompare(a.t||''));
-    let html = '';
-    allEntries.slice(0,12).forEach((data, idx) => {
-      const tsStr = data.t || '';
-      const ts = tsStr ? new Date(tsStr).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
-      const zoneNames = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>z.name);
-      const durs = data.d || [];
-      const skips = data.s || [];
-      if (idx > 0) html += '<div style="border-top:1px solid rgba(255,255,255,0.07);margin:8px 0"></div>';
-      html += `<div class="lastrun-ts">📅 ${ts}</div>`;
-      const ran = [], skipped = [];
-      durs.forEach((d,i) => {
-        const name = zoneNames[i] || ('Zone '+(i+1));
-        if (skips.includes(i)) skipped.push({name,d});
-        else ran.push({name,d});
-      });
-      if (ran.length) {
-        html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
-        ran.forEach(z => { html += `<div class="lastrun-row"><span class="lastrun-zone">💧 ${z.name}</span><span class="lastrun-dur">${z.d?z.d+'m':'—'}</span></div>`; });
-      }
-      if (skipped.length) {
-        html += `<div class="lastrun-section-lbl" style="margin-top:6px">Skipped (${skipped.length})</div>`;
-        skipped.forEach(z => { html += `<div class="lastrun-row"><span class="lastrun-skipped">⏭ ${z.name}</span><span class="lastrun-dur">—</span></div>`; });
-      }
-    });
-    body.innerHTML = html || '<p style="color:var(--secondary-text-color,#666)">No run data found.</p>';
-  }
-
-  async _createLogAutomation() {
-    // Build duration list from active zones
-    const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false);
-    const durParts = zones.map(z => z.dur ? `states('${z.dur}')|int(0)` : '0').join(', ');
-    const valTemplate = `{{ ([{"t": now().strftime('%Y-%m-%dT%H:%M'), "d": [${durParts}], "s": []}] + (states('input_text.sprinkler_run_log_0') | from_json(default=[])))[:4] | to_json }}`;
-
-    const config = {
-      alias: 'Sprinkler Run Logger',
-      description: 'Auto-created by Sprinkler Dash Card — logs each schedule run',
-      mode: 'single',
-      triggers: [{ trigger: 'state', entity_id: 'script.sprinkler', from: 'on', to: 'off' }],
-      actions: [{
-        action: 'input_text.set_value',
-        target: { entity_id: 'input_text.sprinkler_run_log_0' },
-        data: { value: valTemplate }
-      }],
-    };
-
-    await this._hass.callApi('POST', 'config/automation/config/sprinkler_run_logger', config);
-    await this._hass.callService('automation', 'reload');
-    console.log('[SprinklerCard] created automation.sprinkler_run_logger');
+    r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
   }
 
   _recordLastRun() {
-    // Ring buffer: 3 helpers x 4 entries = 12 runs of history
-    const helpers = [
-      'input_text.sprinkler_run_log_0',
-      'input_text.sprinkler_run_log_1',
-      'input_text.sprinkler_run_log_2',
-    ];
-    // Check all helpers are ready
-    if (!helpers.every(e => this._hass.states[e])) return;
+    const e = 'input_text.sprinkler_last_run';
+    if (!this._hass.states[e]) return;
     const skipList = this._skipList();
-    const t = new Date().toISOString().substring(0,16);
-    const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false);
-    const d = zones.map(z => z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : 0);
-    const s = zones.map((z,i)=>i).filter(i=>skipList.includes(zones[i].sw));
-    const entry = {t, d, s};
-    // collect all current entries
-    let all = [];
-    helpers.forEach(e => {
-      try { const arr = JSON.parse(this._hass.states[e]?.state||'[]'); if(Array.isArray(arr)) all.push(...arr); } catch(err) {}
-    });
-    // prepend new entry, keep newest 12
-    all.unshift(entry);
-    all = all.slice(0,12);
-    // distribute 4 per helper
-    helpers.forEach((e, hi) => {
-      const chunk = all.slice(hi*4, hi*4+4);
-      const val = JSON.stringify(chunk);
-      if (val.length <= 255) this._svc('input_text','set_value',{entity_id:e, value:val});
-    });
+    // store compact data to fit in 255 char limit — short name truncation
+    const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>({
+      n: z.name.substring(0,12),
+      d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : null,
+      s: skipList.includes(z.sw) ? 1 : 0,
+    }));
+    const data = JSON.stringify({ ts: new Date().toISOString(), z: zones });
+    this._svc('input_text', 'set_value', {entity_id: e, value: data.substring(0, 255)});
   }
 
   _toggleDay(day) {
@@ -2289,39 +1401,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     const slots = this._cfg.meta_slots || DEFAULT_META_SLOTS;
     const jojoLow = parseFloat(this._cfg.jojo_low_pct)||35;
     const rainThresh = parseFloat(this._cfg.rain_threshold)||5;
-
-    // update title when postponed due to rain
-    const titleEl = this.shadowRoot.querySelector('.hdr-title h2');
-    if (titleEl) {
-      const schedE = this._cfg.schedule_entity;
-      const schedOff = schedE && this._hass.states[schedE]?.state === 'off';
-      const rainVal = this._cfg.rain_sensor ? parseFloat(this._hass.states[this._cfg.rain_sensor]?.state||0) : 0;
-      if (schedOff) {
-        const map2 = this._manualRunMap ? this._manualRunMap() : {};
-        const disabledAtStr2 = map2['_rain_disabled_at'];
-        if (disabledAtStr2) {
-          const disabledAt2 = new Date(disabledAtStr2).getTime();
-          const restoreHours2 = this._cfg.rain_restore_hours || 48;
-          const restoreAt2 = disabledAt2 + restoreHours2 * 3600000;
-          const remaining2 = restoreAt2 - Date.now();
-          if (remaining2 > 0) {
-            const rh2 = Math.floor(remaining2 / 3600000);
-            const rm2 = Math.floor((remaining2 % 3600000) / 60000);
-            const icon2 = rainVal >= rainThresh ? '🌧' : '🌤';
-            titleEl.textContent = rh2 > 0 ? `Sprinklers — Resumes in ${rh2}h ${rm2}m ${icon2}` : `Sprinklers — Resumes in ${rm2}m ${icon2}`;
-          } else {
-            titleEl.textContent = 'Sprinklers — Resuming soon 🌤';
-          }
-          titleEl.style.color = '#7eb4ff';
-        } else {
-          titleEl.textContent = 'Sprinklers';
-          titleEl.style.color = '';
-        }
-      } else {
-        titleEl.textContent = 'Sprinklers';
-        titleEl.style.color = '';
-      }
-    }
     const activeSlots = slots.filter(s=>s.enabled!==false);
 
     // set grid class based on count of enabled slots
@@ -2363,14 +1442,9 @@ class SprinklerDashCardV2 extends HTMLElement {
             const numVal=parseFloat(val1)||0;
             if (numVal>=rainThresh && this._cfg.rules?.rain_disable_schedule!==false) {
               warn=true;
-              if (this._cfg.schedule_entity) {
-                const schedSt = this._hass.states[this._cfg.schedule_entity]?.state;
-                if (schedSt === 'on') {
-                  this._svc('switch','turn_off',{entity_id:this._cfg.schedule_entity});
-                }
-                // always reset the timer when rain exceeds threshold (even if schedule already off)
-                this._rainDisabledAt = Date.now();
-                this._persistRainDisabledAt();
+              if (this._cfg.schedule_entity&&this._hass.states[this._cfg.schedule_entity]?.state==='on') {
+                this._svc('switch','turn_off',{entity_id:this._cfg.schedule_entity});
+                this._rainDisabledAt = Date.now(); // record when rain disabled the schedule
               }
             }
           }
@@ -2437,51 +1511,12 @@ class SprinklerDashCardV2 extends HTMLElement {
       this.shadowRoot.getElementById('zskip-'+i)?.classList.toggle('zskip--active', skipped);
       const skipEl = this.shadowRoot.getElementById('zskip-'+i);
       if (skipEl) skipEl.title = skipped ? 'Skipped — tap to cancel' : 'Skip next scheduled run';
-      const seqEl = this.shadowRoot.getElementById('zseq-'+i);
-      if (seqEl) {
-        const scriptRunning = this._hass.states['script.sprinkler']?.state === 'on';
-        seqEl.classList.remove('zseq--on','zseq--done','zseq--queued');
-        // check if zone ran in the last 3 hours (script just finished)
-        const scriptLastRan = this._hass.states['script.sprinkler']?.last_changed;
-        const scriptJustRan = scriptLastRan && (Date.now() - new Date(scriptLastRan).getTime()) < (this._cfg.tick_hours||3)*3600000;
-        // use script last_triggered (not switch last_changed which resets on HA restart)
-        const scriptLastTriggered = this._hass.states['script.sprinkler']?.attributes?.last_triggered;
-        const ranRecently = scriptLastTriggered && (Date.now() - new Date(scriptLastTriggered).getTime()) < (this._cfg.tick_hours||3)*3600000;
-        if (!scriptRunning) { seqEl.textContent = i+1; }
-        if (isOn) {
-          seqEl.classList.add('zseq--on'); seqEl.textContent = i+1;
-        } else if (!scriptRunning && scriptJustRan && ranRecently && z.schedule_enabled !== false) {
-          seqEl.classList.add('zseq--done'); seqEl.textContent = '✓';
-        } else if (!scriptRunning && !scriptJustRan && this._isManualRecent(z.sw)) {
-          seqEl.classList.add('zseq--manual'); seqEl.textContent = i+1;
-        } else if (scriptRunning && z.schedule_enabled !== false) {
-          const schedZones = this._activeZones().filter(zz=>zz.sw&&zz.schedule_enabled!==false);
-          const currentIdx = schedZones.findIndex(zz=>zz.sw&&this._hass.states[zz.sw]?.state==='on');
-          const myIdx = schedZones.findIndex(zz=>zz.sw===z.sw);
-          if (currentIdx >= 0 && myIdx >= 0) {
-            if (myIdx < currentIdx) { seqEl.classList.add('zseq--done'); seqEl.textContent='✓'; }
-            else if (myIdx > currentIdx) seqEl.classList.add('zseq--queued');
-          } else { seqEl.classList.add('zseq--queued'); }
-        }
-      }
+      this.shadowRoot.getElementById('zseq-'+i)?.classList.toggle('zseq--on',isOn);
       this.shadowRoot.getElementById('ztog-'+i)?.classList.toggle('ztoggle--on',isOn);
       const inp=this.shadowRoot.getElementById('zdur-'+i);
       if(inp&&inp!==this.shadowRoot.activeElement){inp.min=durMin;inp.max=durMax;inp.value=durVal;}
       const elapsed=isOn&&this._onTimes[i]?(Date.now()-this._onTimes[i].ts)/1000:0;
-      const totalSecs=this._onTimes[i]?.totalSecs||durVal*60;
-      // recovery: if card reloaded mid-manual-run, check stored stop time
-      if (isOn && z.sw && this._hass.states['script.sprinkler']?.state !== 'on' && !this._manualTimers?.[i]) {
-        const map = this._manualRunMap();
-        const stopStr = map[z.sw+'_stop'];
-        if (stopStr && new Date(stopStr).getTime() < Date.now()) {
-          if (!this._autoStopPending) this._autoStopPending = {};
-          if (!this._autoStopPending[z.sw]) {
-            this._autoStopPending[z.sw] = true;
-            setTimeout(() => { this._svc('switch','turn_off',{entity_id:z.sw}); this._recordManualRun(z.sw); delete this._autoStopPending[z.sw]; }, 2000);
-          }
-        }
-      }
-      this._renderProgress(i,isOn,elapsed,totalSecs, skipped);
+      this._renderProgress(i,isOn,elapsed,this._onTimes[i]?.totalSecs||durVal*60, skipped);
       // last-run badge: show time since switch was last on (last_changed when state went off)
       const zlastEl = this.shadowRoot.getElementById('zlast-'+i);
       if (zlastEl && !isOn && z.sw) {
@@ -2511,54 +1546,17 @@ class SprinklerDashCardV2 extends HTMLElement {
     if(nextEl&&attrs.next_trigger){
       const d=new Date(attrs.next_trigger),now=new Date(),diff=d-now;
       const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000);
-      const timeStr=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false});
+      const timeStr=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
       const todayDate=now.toDateString(), tomorrowDate=new Date(now.getTime()+86400000).toDateString();
       let label;
-      const days = Math.floor(diff/86400000);
-      const dayName = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()];
       if(diff<0) label='overdue';
       else if(h<1) label='in '+m+'m';
-      else if(h<2) label='in '+h+'h '+(m>0?m+'m':'');
-      else if(d.toDateString()===todayDate) label='Today in '+h+'h '+(m>0?m+'m':'');
-      else if(d.toDateString()===tomorrowDate) label='Tomorrow in '+h+'h '+(m>0?m+'m':'');
-      else label=dayName+' in '+days+'d '+Math.floor((diff%86400000)/3600000)+'h '+(m>0?m+'m':'');
-      const rainVal = this._cfg.rain_sensor ? parseFloat(this._hass.states[this._cfg.rain_sensor]?.state||0) : 0;
-      const rainThresh = this._cfg.rain_threshold || 5;
-      let disabledMsg = 'Schedule disabled';
-      if (!isOn) {
-        const map = this._manualRunMap ? this._manualRunMap() : {};
-        const disabledAtStr = map['_rain_disabled_at'];
-        if (disabledAtStr) {
-          const disabledAt = new Date(disabledAtStr).getTime();
-          const restoreHours = this._cfg.rain_restore_hours || 48;
-          const restoreAt = disabledAt + restoreHours * 3600000;
-          const remaining = restoreAt - Date.now();
-          if (remaining > 0) {
-            const rh = Math.floor(remaining / 3600000);
-            const rm = Math.floor((remaining % 3600000) / 60000);
-            const rainIcon = rainVal >= rainThresh ? '🌧' : '🌤';
-            // find next scheduled run after restore time
-            const restoreDate = new Date(restoreAt);
-            const nextTrigger = attrs && attrs.next_trigger ? new Date(attrs.next_trigger) : null;
-            const scheduledDays = attrs.weekdays || [];
-            let nextRunStr = '';
-            if (nextTrigger && nextTrigger < restoreDate) {
-              const dayNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-              const dayShort = ['sun','mon','tue','wed','thu','fri','sat'];
-              const skipDay = nextTrigger.getDay();
-              if (scheduledDays.includes(dayShort[skipDay])) {
-                nextRunStr = ' — skips ' + dayNames[skipDay];
-              }
-            }
-            disabledMsg = rh > 0 ? `Resumes in ${rh}h ${rm}m ${rainIcon}${nextRunStr}` : `Resumes in ${rm}m ${rainIcon}${nextRunStr}`;
-          } else {
-            disabledMsg = 'Resuming soon... 🌤';
-          }
-        } else if (rainVal >= rainThresh) {
-          disabledMsg = 'Postponed — rain detected 🌧';
-        }
-      }
-      nextEl.textContent=isOn?'Next: '+label:disabledMsg;
+      else if(h<24){
+        if(d.toDateString()===todayDate) label='Tonight '+timeStr;
+        else label='in '+h+'h '+(m>0?m+'m':'');
+      } else if(d.toDateString()===tomorrowDate) label='Tomorrow '+timeStr;
+      else label=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+timeStr;
+      nextEl.textContent=isOn?'next: '+label:'disabled';
       nextEl.className='sched-next'+(isOn?' sched-next--on':'');
     }
   }
