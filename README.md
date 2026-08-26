@@ -91,20 +91,40 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 
 ## Installation
 
-### Via HACS (Recommended)
+### Option 1: HACS Custom Repository (Recommended - Takes 30 seconds)
 
-1. Open HACS → Frontend
-2. Search for **Sprinkler Dash Card** and install
-3. Hard refresh your browser
-4. Add the card: `type: custom:sprinkler-dash-card-v2`
+1. **Open HACS** in Home Assistant
+2. Click **Frontend** in the sidebar
+3. Click the **⋮ (three dots)** in the top right corner
+4. Select **"Custom repositories"**
+5. Paste this URL: `https://github.com/HybridRCG/sprinkler-dash-card`
+6. Select **"Lovelace"** as the category
+7. Click **"Create"**
+8. The card should now appear in HACS — click **Install**
+9. **Hard refresh** your browser (Ctrl+Shift+R on Windows, Cmd+Shift+R on Mac, or open DevTools and long-press refresh)
 
-### Manual
+**That's it!** You're done. Go to any dashboard and add the card with:
+```yaml
+type: custom:sprinkler-dash-card-v2
+```
 
-1. Download `sprinkler-dash-card.js` from the [latest release](../../releases/latest)
-2. Copy to `/config/www/sprinkler-dash-card.js`
+> **Note:** The card is pending approval for the HACS default store. Once approved, you'll be able to search and install directly without adding a custom repository. For now, custom repository is the fastest way to get started.
+
+### Option 2: Manual Installation
+
+1. Download `sprinkler-dash-card.js` from the [latest release](https://github.com/HybridRCG/sprinkler-dash-card/releases/latest)
+2. Copy it to `/config/www/sprinkler-dash-card.js` on your Home Assistant server
 3. Go to **Settings → Dashboards → Resources**
-4. Add `/local/sprinkler-dash-card.js` as **JavaScript Module**
-5. Hard refresh your browser
+4. Click the **+ Create New Resource** button
+5. Paste: `/local/sprinkler-dash-card.js`
+6. Set **Resource Type** to **JavaScript Module**
+7. Click **Create**
+8. **Hard refresh** your browser
+
+Now add the card to any dashboard:
+```yaml
+type: custom:sprinkler-dash-card-v2
+```
 
 ---
 
