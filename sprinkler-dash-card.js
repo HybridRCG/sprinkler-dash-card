@@ -1343,6 +1343,9 @@ class SprinklerDashCardV2 extends HTMLElement {
     const jlEl=panel.querySelector('[data-cfg-key="jojo_low_pct"]');
     if (jlEl) this._cfg.jojo_low_pct=parseFloat(jlEl.value)||35;
 
+    // update rule descriptions to reflect current values
+    this._updateRuleDescriptions();
+
     // save directly via HA websocket — bypasses sections layout config-changed limitation
     const configToSave = JSON.parse(JSON.stringify(this._cfg));
     console.log('[SprinklerCard] _doSave saving via websocket, zones[0].name =', configToSave?.zones?.[0]?.name);
@@ -1355,6 +1358,36 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
     this._buildZoneGrid();
     this._update();
+  }
+
+  _updateRuleDescriptions() {
+    const panel = this.shadowRoot.getElementById('cfg-panel');
+    if (!panel) return;
+    
+    const rules = this._cfg.rules || {};
+    const ruleDefs = [
+      {
+        key:'confirm_actions',
+        desc:'Show a confirmation popup before turning zones on/off, All Off, Start Schedule, and schedule toggle.'
+      },
+      {
+        key:'rain_disable_schedule',
+        desc:`If rain sensor exceeds ${this._cfg.rain_threshold||5}mm, the schedule switch is automatically turned off. Rain value turns yellow in info bar.`
+      },
+      {
+        key:'rain_auto_restore',
+        desc:`After rain disables the schedule, automatically re-enable it after ${this._cfg.rain_restore_hours||48}h (configurable above in Rain restore).`
+      },
+      {
+        key:'jojo_shutoff_zones',
+        desc:`If tank level drops below ${this._cfg.jojo_low_pct||35}%, all running zones are immediately switched off. Jojo info bar turns red.`
+      }
+    ];
+    
+    ruleDefs.forEach(def => {
+      const ruleEl = Array.from(panel.querySelectorAll('.rule-desc')).find(el => el.textContent.includes(def.key.replace(/_/g,' ')) || el.textContent.includes(def.desc.split(' ')[0]));
+      if (ruleEl) ruleEl.textContent = def.desc;
+    });
   }
 
   async _saveViaWebsocket(newCardConfig, btn) {
