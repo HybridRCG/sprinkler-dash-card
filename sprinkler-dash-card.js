@@ -587,7 +587,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     .time-picker-btn{width:44px;height:40px;border:1px solid rgba(77,196,154,0.3);background:rgba(26,138,100,0.12);color:#4dc49a;font-size:20px;font-weight:700;cursor:pointer;border-radius:8px;padding:0;transition:background .1s}
     .time-picker-btn:hover{background:rgba(26,138,100,0.25)}
     .time-picker-btn:active{transform:scale(0.95)}
-    .time-picker-input{width:60px;font-size:40px;font-weight:700;text-align:center;padding:12px 8px;border:2px solid rgba(77,196,154,0.3);background:rgba(26,138,100,0.1);color:var(--primary-text-color,#fff);border-radius:10px;-moz-appearance:textfield;outline:none}
+    .time-picker-input{width:90px;height:70px;font-size:40px;font-weight:700;text-align:center;padding:15px 12px;border:2px solid rgba(77,196,154,0.3);background:rgba(26,138,100,0.1);color:var(--primary-text-color,#fff);border-radius:10px;-moz-appearance:textfield;outline:none;line-height:1}
     .time-picker-input::-webkit-inner-spin-button,.time-picker-input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
     .time-picker-input:focus{border-color:rgba(77,196,154,0.6);background:rgba(26,138,100,0.2)}
     .time-picker-sep{font-size:40px;font-weight:700;color:var(--primary-text-color,#eee);line-height:1}
