@@ -216,6 +216,12 @@ Tap **↻** in the Last Run header to refresh the data after a schedule complete
 
 | Version | Changes |
 |---|---|
+| v2.9.55 | Automation rule descriptions now dynamically read config values after save — Jojo shutoff threshold, rain threshold, and rain restore hours show correct saved values |
+| v2.9.54 | Fixed time picker input width & height — no more cut-off numbers on desktop or mobile |
+| v2.9.53 | **NEW:** Time picker is now a beautiful popout modal with large hour/minute spinners — tap time → modal appears → adjust with ▲/▼ or type → tap Save to close and apply changes |
+| v2.9.52 | Fixed next-run countdown label — shows "in Xh Xm" instead of "Tonight" for clarity |
+| v2.9.51 | Replaced broken time picker with proper dual-spinner UI for desktop & mobile |
+| v2.9.50 | Removed buggy run history feature; simplified Last Run to static message |
 | v2.9.35 | Seasonal rain restore — auto summer/winter hours, manual override, reset buttons |
 | v2.9.34 | Skip day check — only shows skipped day if it is a scheduled run day |
 | v2.9.33 | Rain postpone countdown shows which scheduled day will be skipped |
