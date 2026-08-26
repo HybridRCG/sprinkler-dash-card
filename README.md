@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, and everything else is configured and auto-created from within the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.9.55-green)
+![Version](https://img.shields.io/badge/version-v2.9.56-green)
 ![HACS](https://img.shields.io/badge/HACS-Default-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
@@ -236,6 +236,7 @@ Tap **↻** in the Last Run header to refresh the data after a schedule complete
 
 | Version | Changes |
 |---|---|
+| v2.9.56 | Fixed zone duration input increments — all zones now step by 1 minute (not 5) |
 | v2.9.55 | Automation rule descriptions now dynamically read config values after save — Jojo shutoff threshold, rain threshold, and rain restore hours show correct saved values |
 | v2.9.54 | Fixed time picker input width & height — no more cut-off numbers on desktop or mobile |
 | v2.9.53 | **NEW:** Time picker is now a beautiful popout modal with large hour/minute spinners — tap time → modal appears → adjust with ▲/▼ or type → tap Save to close and apply changes |

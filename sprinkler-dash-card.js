@@ -670,7 +670,7 @@ class SprinklerDashCardV2 extends HTMLElement {
         <p>Go to <b>Settings → Helpers → Add → Number</b> and create one per zone:</p>
         <ul>
           <li><code>input_number.valve_1_time</code> through <code>input_number.valve_8_time</code></li>
-          <li>Settings: min 0, max 60, step 5, unit <b>min</b></li>
+          <li>Settings: min 0, max 60, step 1, unit <b>min</b></li>
           <li>Add up to <code>valve_10_time</code> if using more than 8 zones</li>
         </ul>
 
@@ -871,7 +871,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const dr=document.createElement('div'); dr.className='zdur-row';
       const dl=document.createElement('span'); dl.className='zdur-lbl'; dl.textContent='Min';
       const di=document.createElement('input'); di.type='number'; di.className='zdur-input';
-      di.id='zdur-'+i; di.min=0; di.max=60; di.step=5; di.value=10;
+      di.id='zdur-'+i; di.min=0; di.max=60; di.step=1; di.value=10;
       const du=document.createElement('span'); du.className='zdur-unit'; du.textContent='min';
       const db=document.createElement('div'); db.className='zdur-btns';
       const bm=document.createElement('button'); bm.className='zdur-btn'; bm.textContent='-';
@@ -895,8 +895,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       });
       const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); if(this._onTimes[i])this._onTimes[i].totalSecs=val*60; };
       di.addEventListener('change',()=>applyDur(parseFloat(di.value)||0));
-      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-5));
-      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+5));
+      bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-1));
+      bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+1));
     });
   }
 
