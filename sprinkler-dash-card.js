@@ -120,7 +120,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._hass = hass;
     if (this._allEntities.length === 0) this._allEntities = Object.keys(hass.states).sort();
     if (!this._mdiLoaded) this._loadMdiIcons();
-    if (!this._built) { this._buildShell(); this._built=true; }
+    if (!this._built) { this._buildShell(); this._built=true; this._checkResumeZones(); }
     this._ensureSprinklerScript();
 
     // toggle Stop Schedule / Start Schedule based on script state
@@ -176,6 +176,42 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _svc(domain, service, data) { this._hass.callService(domain, service, data); }
   _activeZones() { return this._cfg.zones.slice(0, this._cfg.active_zones); }
+
+  _checkResumeZones() {
+    // On first load, detect if any zones are running and check if they've exceeded their duration
+    // This prevents over-watering if HA was restarted mid-zone-run
+    const now = Date.now();
+    const resumed = [];
+    const overran = [];
+    
+    this._activeZones().forEach((z, i) => {
+      if (!z.sw) return;
+      const sw = this._hass.states[z.sw];
+      if (sw?.state !== 'on') return; // zone not running
+      
+      const lastChanged = new Date(sw.last_changed).getTime();
+      const elapsedMs = now - lastChanged;
+      const elapsedMin = elapsedMs / 60000;
+      const duration = parseFloat(this._hass.states[z.dur]?.state) || 10;
+      
+      if (elapsedMin >= duration) {
+        // zone has run past its duration — turn it off immediately
+        this._svc('switch', 'turn_off', {entity_id: z.sw});
+        overran.push(`${z.name} (${Math.round(elapsedMin)}m)`);
+      } else {
+        // zone is still within duration — let it finish naturally
+        resumed.push(`${z.name} (${Math.round(elapsedMin)}/${Math.round(duration)}m)`);
+      }
+    });
+    
+    if (resumed.length || overran.length) {
+      const msg = [
+        resumed.length ? `▶ Resumed: ${resumed.join(', ')}` : '',
+        overran.length ? `⏹ Stopped (overran): ${overran.join(', ')}` : ''
+      ].filter(Boolean).join(' — ');
+      console.log(`[SprinklerCard] Smart Resume: ${msg}`);
+    }
+  }
 
   _skipList() {
     const s = this._hass.states['input_text.sprinkler_skip_zones']?.state || '';
