@@ -575,6 +575,28 @@ class SprinklerDashCardV2 extends HTMLElement {
     .confirm-btn--ok:hover{opacity:.85}
     .confirm-btn--danger{background:rgba(210,45,45,0.85);color:#fff}
     .confirm-btn--danger:hover{opacity:.85}
+    /* time picker modal */
+    .time-picker-modal{display:none;position:fixed;inset:0;z-index:10002;background:rgba(0,0,0,0.85);align-items:center;justify-content:center;padding:16px}
+    .time-picker-modal--open{display:flex}
+    .time-picker-box{background:#1a1a1a;border:1px solid rgba(77,196,154,0.4);border-radius:16px;padding:0;overflow:hidden;width:100%;max-width:300px}
+    .time-picker-hdr{display:flex;align-items:center;justify-content:space-between;padding:16px;border-bottom:1px solid rgba(77,196,154,0.2);background:linear-gradient(135deg,rgba(10,92,69,0.3),rgba(26,138,100,0.2))}
+    .time-picker-title{font-size:16px;font-weight:700;color:#4dc49a}
+    .time-picker-body{padding:32px 16px;display:flex;align-items:center;justify-content:center;gap:16px}
+    .time-picker-spinner{display:flex;flex-direction:column;align-items:center;gap:8px}
+    .time-picker-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--secondary-text-color,#555)}
+    .time-picker-btn{width:44px;height:40px;border:1px solid rgba(77,196,154,0.3);background:rgba(26,138,100,0.12);color:#4dc49a;font-size:20px;font-weight:700;cursor:pointer;border-radius:8px;padding:0;transition:background .1s}
+    .time-picker-btn:hover{background:rgba(26,138,100,0.25)}
+    .time-picker-btn:active{transform:scale(0.95)}
+    .time-picker-input{width:60px;font-size:40px;font-weight:700;text-align:center;padding:12px 8px;border:2px solid rgba(77,196,154,0.3);background:rgba(26,138,100,0.1);color:var(--primary-text-color,#fff);border-radius:10px;-moz-appearance:textfield;outline:none}
+    .time-picker-input::-webkit-inner-spin-button,.time-picker-input::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+    .time-picker-input:focus{border-color:rgba(77,196,154,0.6);background:rgba(26,138,100,0.2)}
+    .time-picker-sep{font-size:40px;font-weight:700;color:var(--primary-text-color,#eee);line-height:1}
+    .time-picker-footer{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding:16px}
+    .time-picker-action-btn{padding:12px;border-radius:10px;border:none;font-size:14px;font-weight:700;cursor:pointer;transition:opacity .15s}
+    .time-picker-cancel{background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.15);color:var(--secondary-text-color,#aaa)}
+    .time-picker-cancel:hover{background:rgba(255,255,255,0.12)}
+    .time-picker-save{background:linear-gradient(135deg,#0a5c45,#1a8a64);color:#fff}
+    .time-picker-save:hover{opacity:.9}
   `; }
 
   _mainHtml() { return `
@@ -693,6 +715,33 @@ class SprinklerDashCardV2 extends HTMLElement {
         </div>
       </div>
     </div>
+    <div class="time-picker-modal" id="time-picker-modal">
+      <div class="time-picker-box">
+        <div class="time-picker-hdr">
+          <span class="time-picker-title">Schedule Time</span>
+          <span style="font-size:11px;color:var(--secondary-text-color,#666)">24h format</span>
+        </div>
+        <div class="time-picker-body">
+          <div class="time-picker-spinner">
+            <div class="time-picker-label">Hour</div>
+            <button class="time-picker-btn" id="hour-up">▲</button>
+            <input type="number" class="time-picker-input" id="hour-input" min="0" max="23">
+            <button class="time-picker-btn" id="hour-down">▼</button>
+          </div>
+          <div class="time-picker-sep">:</div>
+          <div class="time-picker-spinner">
+            <div class="time-picker-label">Minute</div>
+            <button class="time-picker-btn" id="min-up">▲</button>
+            <input type="number" class="time-picker-input" id="min-input" min="0" max="59">
+            <button class="time-picker-btn" id="min-down">▼</button>
+          </div>
+        </div>
+        <div class="time-picker-footer">
+          <button class="time-picker-action-btn time-picker-cancel" id="time-picker-cancel">Cancel</button>
+          <button class="time-picker-action-btn time-picker-save" id="time-picker-save">✓ Save</button>
+        </div>
+      </div>
+    </div>
   `; }
 
   _bindMain() {
@@ -736,75 +785,50 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._editingTime = true;
       const cur = timeEl.textContent.trim() || '06:00';
       const [curH, curM] = cur.split(':').map(Number);
-      timeEl.innerHTML = '';
       
-      const wrap = document.createElement('div');
-      wrap.style.cssText = 'display:flex;align-items:center;gap:8px;padding:4px 6px;border-radius:6px;background:rgba(26,138,100,0.15);border:1px solid rgba(77,196,154,0.4)';
+      const modal = r.getElementById('time-picker-modal');
+      const hInp = r.getElementById('hour-input');
+      const mInp = r.getElementById('min-input');
       
-      // Hour spinner
-      const hCont = document.createElement('div');
-      hCont.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:1px';
-      const hUp = document.createElement('button');
-      hUp.textContent = '▲'; hUp.style.cssText = 'width:24px;height:18px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:10px;cursor:pointer;border-radius:3px;padding:0;line-height:1';
-      const hInp = document.createElement('input');
-      hInp.type = 'number'; hInp.min = 0; hInp.max = 23;
       hInp.value = String(curH).padStart(2,'0');
-      hInp.style.cssText = 'width:34px;font-size:18px;font-weight:700;text-align:center;padding:3px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#eee);border-radius:3px;-moz-appearance:textfield;outline:none';
-      hInp.addEventListener('input', ()=>{let v=parseInt(hInp.value)||0;if(v>23)hInp.value='23';});
-      const hDown = document.createElement('button');
-      hDown.textContent = '▼'; hDown.style.cssText = 'width:24px;height:18px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:10px;cursor:pointer;border-radius:3px;padding:0;line-height:1';
-      hUp.addEventListener('click', ()=>{let v=Math.min(23,parseInt(hInp.value||0)+1);hInp.value=String(v).padStart(2,'0');});
-      hDown.addEventListener('click', ()=>{let v=Math.max(0,parseInt(hInp.value||0)-1);hInp.value=String(v).padStart(2,'0');});
-      hCont.append(hUp, hInp, hDown);
-      
-      // Separator
-      const sep = document.createElement('span');
-      sep.textContent = ':';
-      sep.style.cssText = 'font-size:18px;font-weight:700;color:var(--primary-text-color,#eee)';
-      
-      // Min spinner
-      const mCont = document.createElement('div');
-      mCont.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:1px';
-      const mUp = document.createElement('button');
-      mUp.textContent = '▲'; mUp.style.cssText = 'width:24px;height:18px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:10px;cursor:pointer;border-radius:3px;padding:0;line-height:1';
-      const mInp = document.createElement('input');
-      mInp.type = 'number'; mInp.min = 0; mInp.max = 59;
       mInp.value = String(curM).padStart(2,'0');
-      mInp.style.cssText = 'width:34px;font-size:18px;font-weight:700;text-align:center;padding:3px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--primary-text-color,#eee);border-radius:3px;-moz-appearance:textfield;outline:none';
-      mInp.addEventListener('input', ()=>{let v=parseInt(mInp.value)||0;if(v>59)mInp.value='59';});
-      const mDown = document.createElement('button');
-      mDown.textContent = '▼'; mDown.style.cssText = 'width:24px;height:18px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-size:10px;cursor:pointer;border-radius:3px;padding:0;line-height:1';
-      mUp.addEventListener('click', ()=>{let v=Math.min(59,parseInt(mInp.value||0)+1);mInp.value=String(v).padStart(2,'0');});
-      mDown.addEventListener('click', ()=>{let v=Math.max(0,parseInt(mInp.value||0)-1);mInp.value=String(v).padStart(2,'0');});
-      mCont.append(mUp, mInp, mDown);
       
-      // OK button
-      const okBtn = document.createElement('button');
-      okBtn.textContent = '✓'; okBtn.style.cssText = 'width:28px;height:28px;border:1px solid rgba(77,196,154,0.4);background:rgba(26,138,100,0.15);color:#4dc49a;font-weight:700;cursor:pointer;border-radius:4px;padding:0';
-      okBtn.addEventListener('click', (e)=>{
-        e.stopPropagation();
+      modal.classList.add('time-picker-modal--open');
+      setTimeout(() => hInp.focus(), 100);
+      
+      const updateHour = (delta) => {
+        let v = Math.min(23, Math.max(0, parseInt(hInp.value||0) + delta));
+        hInp.value = String(v).padStart(2,'0');
+      };
+      const updateMin = (delta) => {
+        let v = Math.min(59, Math.max(0, parseInt(mInp.value||0) + delta));
+        mInp.value = String(v).padStart(2,'0');
+      };
+      
+      const save = () => {
         this._editingTime = false;
+        modal.classList.remove('time-picker-modal--open');
         const h = Math.min(23, Math.max(0, parseInt(hInp.value)||0));
         const m = Math.min(59, Math.max(0, parseInt(mInp.value)||0));
         const val = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
-        timeEl.innerHTML = '';
         timeEl.textContent = val;
         if (val !== cur) this._saveTime(val);
-      });
-      
-      // Cancel button
-      const xBtn = document.createElement('button');
-      xBtn.textContent = '✕'; xBtn.style.cssText = 'width:28px;height:28px;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.05);color:var(--secondary-text-color,#aaa);font-weight:700;cursor:pointer;border-radius:4px;padding:0';
-      xBtn.addEventListener('click', (e)=>{
-        e.stopPropagation();
+      };
+      const cancel = () => {
         this._editingTime = false;
-        timeEl.innerHTML = '';
-        timeEl.textContent = cur;
-      });
+        modal.classList.remove('time-picker-modal--open');
+      };
       
-      wrap.append(hCont, sep, mCont, okBtn, xBtn);
-      timeEl.appendChild(wrap);
-      setTimeout(() => { hInp.focus(); hInp.select(); }, 0);
+      r.getElementById('hour-up').onclick = () => updateHour(1);
+      r.getElementById('hour-down').onclick = () => updateHour(-1);
+      r.getElementById('min-up').onclick = () => updateMin(1);
+      r.getElementById('min-down').onclick = () => updateMin(-1);
+      r.getElementById('time-picker-save').onclick = save;
+      r.getElementById('time-picker-cancel').onclick = cancel;
+      
+      hInp.onchange = mInp.onchange = () => {};
+      mInp.addEventListener('input', ()=>{let v=parseInt(mInp.value)||0;if(v>59)mInp.value='59';});
+      hInp.addEventListener('input', ()=>{let v=parseInt(hInp.value)||0;if(v>23)hInp.value='23';});
     });
     r.getElementById('readme-close').addEventListener('click', () => {
       r.getElementById('readme-modal').classList.remove('readme-modal--open');
