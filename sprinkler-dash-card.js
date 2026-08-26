@@ -317,14 +317,14 @@ class SprinklerDashCardV2 extends HTMLElement {
           }],
           else: [
             { action:'switch.turn_on', target:{ entity_id: z.sw } },
-            { delay: { minutes: `{{ [states('${z.dur}') | float(0) | int, 1] | max }}` } },
+            { delay: { minutes: `{{ states('${z.dur}') | float(0) | int or 1 }}` } },
             { action:'switch.turn_off', target:{ entity_id: z.sw } },
           ],
         });
       } else {
         // skip helper not available yet — run normally
         sequence.push({ action:'switch.turn_on', target:{ entity_id: z.sw } });
-        sequence.push({ delay: { minutes: `{{ [states('${z.dur}') | float(0) | int, 1] | max }}` } });
+        sequence.push({ delay: { minutes: `{{ states('${z.dur}') | float(0) | int or 1 }}` } });
         sequence.push({ action:'switch.turn_off', target:{ entity_id: z.sw } });
       }
     });
