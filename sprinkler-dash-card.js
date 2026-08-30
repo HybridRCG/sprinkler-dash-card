@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.72';
+const CARD_VERSION = '2.9.73';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1720,6 +1720,18 @@ class SprinklerDashCardV2 extends HTMLElement {
         html += `<div class="lastrun-row">
           <span class="lastrun-skipped">⏭ ${z.name}</span>
           <span class="lastrun-dur">—</span>
+        </div>`;
+      });
+    }
+    
+    // Show recent manual runs
+    if (this._manualRunLog && Object.keys(this._manualRunLog).length > 0) {
+      html += `<div class="lastrun-section-lbl" style="margin-top:12px;opacity:0.8;font-size:11px">MANUAL RUNS</div>`;
+      Object.entries(this._manualRunLog).forEach(([swEntity, data]) => {
+        const timeAgo = this._formatTimeAgo(new Date(data.timestamp));
+        html += `<div class="lastrun-row">
+          <span class="lastrun-zone">🔧 ${data.zone}</span>
+          <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${data.duration}m • ${timeAgo}</span>
         </div>`;
       });
     }
