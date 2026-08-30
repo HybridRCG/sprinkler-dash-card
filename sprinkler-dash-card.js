@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.67';
+const CARD_VERSION = '2.9.68';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1710,37 +1710,61 @@ class SprinklerDashCardV2 extends HTMLElement {
 
     if (recentZones.length > 0) {
       recentZones.sort((a,b) => b.lastChanged - a.lastChanged);
-      const ran = recentZones.filter(z => !z.skipped);
+      
+      // Separate scheduled runs from manual runs
+      const scheduledTime = new Date(lastTriggered).getTime();
+      const fiveMinBuffer = 5 * 60 * 1000;
+      const scheduledZones = recentZones.filter(z => {
+        const isManual = this._activeZones().find(zo => zo.name === z.name && this._manualRunLog?.[zo.sw]);
+        return !isManual && (z.lastChanged >= scheduledTime - fiveMinBuffer) && (z.lastChanged <= scheduledTime + (2 * 60 * 60 * 1000)); // Within 2 hours after scheduled start
+      });
+      const manualZones = recentZones.filter(z => {
+        const zoneConfig = this._activeZones().find(zo => zo.name === z.name);
+        return zoneConfig?.sw && this._manualRunLog?.[zoneConfig.sw];
+      });
       const skipped = recentZones.filter(z => z.skipped);
       
-      if (ran.length) {
-        html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
-        ran.forEach(z => {
-          const timeAgo = this._formatTimeAgo(new Date(z.lastChanged));
+      // Show scheduled run zones
+      if (scheduledZones.length > 0) {
+        html += `<div class="lastrun-section-lbl" style="margin-bottom:8px;opacity:0.8;font-size:11px">SCHEDULED RUN</div>`;
+        html += `<div class="lastrun-section-lbl">Watered (${scheduledZones.length})</div>`;
+        scheduledZones.forEach(z => {
           // Get zone config for duration lookup
           const zoneConfig = this._activeZones().find(zo => zo.name === z.name);
           let durText = '';
-          // Try manual run log first
-          if (zoneConfig?.sw && this._manualRunLog?.[zoneConfig.sw]) {
-            const manualData = this._manualRunLog[zoneConfig.sw];
-            durText = manualData.duration + 'm';
-          } else if (zoneConfig?.dur && this._hass.states[zoneConfig.dur]) {
-            // For scheduled runs, get from zone duration helper
+          if (zoneConfig?.dur && this._hass.states[zoneConfig.dur]) {
             const durVal = parseFloat(this._hass.states[zoneConfig.dur].state || 10);
             durText = durVal + 'm';
           }
           html += `<div class="lastrun-row">
             <span class="lastrun-zone">💧 ${z.name}</span>
-            <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${durText ? durText + ' • ' : ''}${timeAgo}</span>
+            <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${durText || '—'}</span>
           </div>`;
         });
       }
-      if (skipped.length) {
+      
+      // Show skipped zones
+      if (skipped.length > 0) {
         html += `<div class="lastrun-section-lbl" style="margin-top:10px">Skipped (${skipped.length})</div>`;
         skipped.forEach(z => {
           html += `<div class="lastrun-row">
             <span class="lastrun-skipped">⏭ ${z.name}</span>
             <span class="lastrun-dur">—</span>
+          </div>`;
+        });
+      }
+      
+      // Show recent manual runs
+      if (manualZones.length > 0) {
+        html += `<div class="lastrun-section-lbl" style="margin-top:12px;opacity:0.8;font-size:11px">MANUAL RUNS (RECENT)</div>`;
+        manualZones.forEach(z => {
+          const timeAgo = this._formatTimeAgo(new Date(z.lastChanged));
+          const zoneConfig = this._activeZones().find(zo => zo.name === z.name);
+          const manualData = this._manualRunLog?.[zoneConfig?.sw];
+          const durText = manualData?.duration + 'm' || '—';
+          html += `<div class="lastrun-row">
+            <span class="lastrun-zone">🔧 ${z.name}</span>
+            <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${durText} • ${timeAgo}</span>
           </div>`;
         });
       }

@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, and everything else is configured and auto-created from within the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.9.67-green)
+![Version](https://img.shields.io/badge/version-v2.9.68-green)
 ![HACS](https://img.shields.io/badge/HACS-Default-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
@@ -236,6 +236,7 @@ Tap **↻** in the Last Run header to refresh the data after a schedule complete
 
 | Version | Changes |
 |---|---|
+| v2.9.68 | **POLISHED:** Last Run now clearly separates SCHEDULED RUNS from MANUAL RUNS. Scheduled zones show configured duration. Manual runs show a 🔧 icon and actual duration + timestamp. Crystal clear what was what! |
 | v2.9.67 | **IMPROVED:** Last Run now anchors to scheduler's last_triggered time instead of 2-hour window. Shows all zones that ran since last scheduled run. Detects activity up to 24 hours back. Much more reliable zone activity tracking! |
 | v2.9.66 | **NEW:** Last Run now shows duration! Manual runs display the duration you set (e.g., "12m • 1h ago"). Scheduled runs show configured duration from zone helpers. Fully tracks what each zone actually ran for. |
 | v2.9.65 | **HOTFIX:** Fixed syntax error in v2.9.64 (apostrophe in string). Card now loads without configuration error! |
