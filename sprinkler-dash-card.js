@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.66';
+const CARD_VERSION = '2.9.67';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1686,8 +1686,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     const ts = new Date(lastTriggered).toLocaleString([], {weekday:'long',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
     let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
     
-    // Show which zones have recent activity (last ran within last 2 hours)
-    const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
+    // Show which zones ran since the last scheduled run
+    const lastTriggeredTime = new Date(lastTriggered).getTime();
     const recentZones = [];
     const skipList = this._skipList();
     
@@ -1697,7 +1697,9 @@ class SprinklerDashCardV2 extends HTMLElement {
       if (!sw || !sw.last_changed) return;
       
       const lastChanged = new Date(sw.last_changed).getTime();
-      if (lastChanged > twoHoursAgo) {
+      // Show zones that changed since the last triggered time (or within 24 hours if older)
+      const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
+      if (lastChanged >= lastTriggeredTime - (5 * 60 * 1000) || lastChanged > oneDayAgo) { // 5 min buffer before script start
         recentZones.push({
           name: z.name,
           lastChanged: lastChanged,
@@ -1743,7 +1745,7 @@ class SprinklerDashCardV2 extends HTMLElement {
         });
       }
     } else {
-      html += '<p style="color:var(--secondary-text-color,#666);margin-top:10px">No zone activity in last 2 hours. Run the schedule to see history.</p>';
+      html += '<p style="color:var(--secondary-text-color,#666);margin-top:10px">No zone activity detected since last run. Zones may have been skipped or are inactive.</p>';
     }
     
     body.innerHTML = html;
