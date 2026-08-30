@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.73';
+const CARD_VERSION = '2.9.74';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -126,7 +126,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._hass = hass;
     if (this._allEntities.length === 0) this._allEntities = Object.keys(hass.states).sort();
     if (!this._mdiLoaded) this._loadMdiIcons();
-    if (!this._built) { this._buildShell(); this._built=true; this._checkResumeZones(); }
+    if (!this._built) { this._buildShell(); this._built=true; this._checkResumeZones(); this._loadManualLog(); }
     this._ensureSprinklerScript();
 
     // toggle Stop Schedule / Start Schedule based on script state
@@ -355,6 +355,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       (s.attributes.entities||[]).includes('script.sprinkler')
     );
     const needsSkipHelper = !this._hass.states['input_text.sprinkler_skip_zones'];
+    const needsManualLogHelper = !this._hass.states['input_text.sprinkler_manual_log'];
 
     const afterHelper = (helperJustCreated) => {
       if (needsScript || helperJustCreated) {
@@ -366,8 +367,10 @@ class SprinklerDashCardV2 extends HTMLElement {
       }
     };
 
-    if (needsSkipHelper) {
-      const creates = [this._createSkipHelper()];
+    if (needsSkipHelper || needsManualLogHelper) {
+      const creates = [];
+      if (needsSkipHelper) creates.push(this._createSkipHelper());
+      if (needsManualLogHelper) creates.push(this._createManualLogHelper());
       Promise.all(creates).then(() => setTimeout(()=>afterHelper(true), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
     } else {
       afterHelper(false);
@@ -403,6 +406,20 @@ class SprinklerDashCardV2 extends HTMLElement {
   //     console.warn('[SprinklerCard] could not auto-create run history helper', e);
   //   }
   // }
+
+  async _createManualLogHelper() {
+    try {
+      await this._hass.connection.sendMessagePromise({
+        type: 'input_text/create',
+        name: 'Sprinkler Manual Log',
+        max: 255, min: 0, mode: 'text', initial: '{}',
+        icon: 'mdi:water-pump',
+      });
+      console.log('[SprinklerCard] created input_text.sprinkler_manual_log');
+    } catch(e) {
+      console.warn('[SprinklerCard] could not auto-create manual log helper', e);
+    }
+  }
 
   async _createSkipHelper() {
     // create input_text.sprinkler_skip_zones via the direct websocket helper-creation command
@@ -1623,19 +1640,43 @@ class SprinklerDashCardV2 extends HTMLElement {
     document.body.appendChild(modal);
   }
   
+  _persistManualLog() {
+    const e = 'input_text.sprinkler_manual_log';
+    if (!this._hass.states[e]) return;
+    try {
+      const data = JSON.stringify(this._manualRunLog).substring(0, 255);
+      this._svc('input_text', 'set_value', {entity_id: e, value: data});
+    } catch(err) {
+      console.warn('[SprinklerCard] could not persist manual log', err);
+    }
+  }
+
+  _loadManualLog() {
+    const e = 'input_text.sprinkler_manual_log';
+    const state = this._hass.states[e];
+    if (!state || !state.state || state.state === '{}') return;
+    try {
+      const loaded = JSON.parse(state.state);
+      this._manualRunLog = {...this._manualRunLog, ...loaded};
+    } catch(err) {
+      // ignore malformed data
+    }
+  }
+
   _manualZoneRun(idx, z, runDuration, originalDuration) {
     if (!z.sw) return;
     
     // Turn on the zone
     this._svc('switch', 'turn_on', {entity_id: z.sw});
     
-    // Store manual run data for Last Run display
+    // Store manual run data for Last Run display (in-memory + persisted)
     if (!this._manualRunLog) this._manualRunLog = {};
     this._manualRunLog[z.sw] = {
       zone: z.name,
       duration: runDuration,
       timestamp: new Date().toISOString()
     };
+    this._persistManualLog();
     
     // Clear any existing timer for this zone
     if (this._manualZoneTimers?.[idx]) clearTimeout(this._manualZoneTimers[idx]);
