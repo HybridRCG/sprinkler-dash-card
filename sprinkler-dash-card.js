@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.65';
+const CARD_VERSION = '2.9.66';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -48,7 +48,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._built = false;
     this._onTimes = {};
     this._prevDurVals = {};
-    this._manualZoneTimers = {};;
+    this._manualZoneTimers = {};
+    this._manualRunLog = {};;
     this._editingTime = false;
     this._showConfig = false;
     this._cfgDragSrc = null;
@@ -1615,6 +1616,14 @@ class SprinklerDashCardV2 extends HTMLElement {
     // Turn on the zone
     this._svc('switch', 'turn_on', {entity_id: z.sw});
     
+    // Store manual run data for Last Run display
+    if (!this._manualRunLog) this._manualRunLog = {};
+    this._manualRunLog[z.sw] = {
+      zone: z.name,
+      duration: runDuration,
+      timestamp: new Date().toISOString()
+    };
+    
     // Clear any existing timer for this zone
     if (this._manualZoneTimers?.[idx]) clearTimeout(this._manualZoneTimers[idx]);
     if (!this._manualZoneTimers) this._manualZoneTimers = {};
@@ -1706,9 +1715,21 @@ class SprinklerDashCardV2 extends HTMLElement {
         html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
         ran.forEach(z => {
           const timeAgo = this._formatTimeAgo(new Date(z.lastChanged));
+          // Get zone config for duration lookup
+          const zoneConfig = this._activeZones().find(zo => zo.name === z.name);
+          let durText = '';
+          // Try manual run log first
+          if (zoneConfig?.sw && this._manualRunLog?.[zoneConfig.sw]) {
+            const manualData = this._manualRunLog[zoneConfig.sw];
+            durText = manualData.duration + 'm';
+          } else if (zoneConfig?.dur && this._hass.states[zoneConfig.dur]) {
+            // For scheduled runs, get from zone duration helper
+            const durVal = parseFloat(this._hass.states[zoneConfig.dur].state || 10);
+            durText = durVal + 'm';
+          }
           html += `<div class="lastrun-row">
             <span class="lastrun-zone">💧 ${z.name}</span>
-            <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${timeAgo}</span>
+            <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${durText ? durText + ' • ' : ''}${timeAgo}</span>
           </div>`;
         });
       }
