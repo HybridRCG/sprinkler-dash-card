@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.64';
+const CARD_VERSION = '2.9.65';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1668,7 +1668,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     }
     
     if (!lastTriggered) {
-      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">⏳ No run recorded yet. Run the schedule to populate history.</p><p style="font-size:11px;color:#666;margin-top:10px">💡 Tip: Manual zone runs don't populate Last Run (they're manual, not scheduled).</p>';
+      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">⏳ No run recorded yet. Run the schedule to populate history.</p><p style="font-size:11px;color:#666;margin-top:10px">💡 Tip: Manual zone runs do not populate Last Run (manual, not scheduled).</p>';
       r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
       return;
     }
