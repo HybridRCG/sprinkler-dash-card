@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.61';
+const CARD_VERSION = '2.9.62';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -915,6 +915,13 @@ class SprinklerDashCardV2 extends HTMLElement {
       db.append(bm,bp); dr.append(dl,di,du,db);
       const zlast=document.createElement('div'); zlast.className='zlast'; zlast.id='zlast-'+i;
       el.append(top,pt,stat,zlast,dv,dr); grid.appendChild(el);
+      
+      // Click zone card to expand details
+      el.addEventListener('click', (ev) => {
+        if (ev.target.tagName === 'BUTTON' || ev.target.tagName === 'INPUT' || ev.target.closest('.zskip') || ev.target.closest('.ztoggle')) return;
+        this._showZoneDetails(i, z);
+      });
+      
       skip.addEventListener('click',()=>{
         if (!z.sw) return;
         this._toggleSkip(z);
@@ -1487,6 +1494,65 @@ class SprinklerDashCardV2 extends HTMLElement {
       if (allSwitches.length) this._svc('switch', 'turn_off', {entity_id: allSwitches});
       this._activeZones().forEach((_,i)=>{ delete this._onTimes[i]; this._renderProgress(i,false,0,0,false); });
     });
+  }
+
+  _showZoneDetails(idx, z) {
+    const r = this.shadowRoot;
+    const modal = document.createElement('div');
+    modal.className = 'zone-detail-modal zone-detail-modal--open';
+    modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000';
+    
+    const content = document.createElement('div');
+    content.style.cssText = 'background:#222;border-radius:12px;padding:20px;max-width:400px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.8);color:#fff';
+    
+    const title = document.createElement('h2');
+    title.style.cssText = 'margin:0 0 15px 0;font-size:18px;color:#4dc49a';
+    title.textContent = z.name;
+    
+    const sw = this._hass.states[z.sw];
+    const isOn = sw?.state === 'on';
+    
+    const status = document.createElement('div');
+    status.style.cssText = 'font-size:13px;margin-bottom:15px;padding:8px;background:rgba(77,196,154,0.1);border-radius:6px';
+    status.innerHTML = `<strong>Status:</strong> ${isOn ? '🟢 ON' : '⚪ OFF'}`;
+    
+    const duration = document.createElement('div');
+    duration.style.cssText = 'font-size:13px;margin-bottom:15px;padding:8px;background:rgba(77,196,154,0.1);border-radius:6px';
+    const dur = z.dur ? parseFloat(this._hass.states[z.dur]?.state || 10) : 10;
+    duration.innerHTML = `<strong>Duration:</strong> ${dur} min`;
+    
+    const lastRun = document.createElement('div');
+    lastRun.style.cssText = 'font-size:13px;margin-bottom:15px;padding:8px;background:rgba(77,196,154,0.1);border-radius:6px';
+    const lastChanged = sw?.last_changed ? new Date(sw.last_changed).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'unknown';
+    lastRun.innerHTML = `<strong>Last Activity:</strong> ${lastChanged}`;
+    
+    const buttons = document.createElement('div');
+    buttons.style.cssText = 'display:flex;gap:8px;margin-top:15px';
+    
+    const closeBtn = document.createElement('button');
+    closeBtn.style.cssText = 'flex:1;padding:8px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;border-radius:6px;cursor:pointer;font-weight:600';
+    closeBtn.textContent = 'Close';
+    closeBtn.addEventListener('click', () => modal.remove());
+    
+    const toggleBtn = document.createElement('button');
+    toggleBtn.style.cssText = 'flex:1;padding:8px;background:'+(isOn ? '#c23030' : '#4dc49a')+';border:none;color:#fff;border-radius:6px;cursor:pointer;font-weight:600';
+    toggleBtn.textContent = isOn ? 'Turn Off' : 'Turn On';
+    toggleBtn.addEventListener('click', () => {
+      if (z.sw) {
+        this._svc('switch', isOn ? 'turn_off' : 'turn_on', {entity_id: z.sw});
+        modal.remove();
+      }
+    });
+    
+    buttons.append(closeBtn, toggleBtn);
+    content.append(title, status, duration, lastRun, buttons);
+    modal.append(content);
+    
+    modal.addEventListener('click', (ev) => {
+      if (ev.target === modal) modal.remove();
+    });
+    
+    document.body.appendChild(modal);
   }
 
   _showLastRun() {
