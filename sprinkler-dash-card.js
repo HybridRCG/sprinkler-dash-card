@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.62';
+const CARD_VERSION = '2.9.63';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -48,6 +48,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._built = false;
     this._onTimes = {};
     this._prevDurVals = {};
+    this._manualZoneTimers = {};;
     this._editingTime = false;
     this._showConfig = false;
     this._cfgDragSrc = null;
@@ -113,7 +114,11 @@ class SprinklerDashCardV2 extends HTMLElement {
   }
 
   connectedCallback() { this._tickInterval = setInterval(()=>this._tick(), 1000); }
-  disconnectedCallback() { clearInterval(this._tickInterval); }
+  disconnectedCallback() { 
+    clearInterval(this._tickInterval);
+    // Clean up any pending manual zone timers
+    if (this._manualZoneTimers) Object.values(this._manualZoneTimers).forEach(t => clearTimeout(t));
+  }
 
   set hass(hass) {
     const prevHass = this._hass;
@@ -280,6 +285,9 @@ class SprinklerDashCardV2 extends HTMLElement {
   _startSchedule() {
     this._confirm('Start Schedule', 'Run all scheduled zones now?').then(ok => {
       if (!ok) return;
+      // Clear any manual zone timers to prevent interference
+      if (this._manualZoneTimers) Object.values(this._manualZoneTimers).forEach(t => clearTimeout(t));
+      this._manualZoneTimers = {};
       if (!this._hass.states['script.sprinkler']) {
         this._createSprinklerScript().then(() => {
           setTimeout(() => this._svc('script','turn_on',{entity_id:'script.sprinkler'}), 1000);
@@ -1503,49 +1511,95 @@ class SprinklerDashCardV2 extends HTMLElement {
     modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000';
     
     const content = document.createElement('div');
-    content.style.cssText = 'background:#222;border-radius:12px;padding:20px;max-width:400px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.8);color:#fff';
+    content.style.cssText = 'background:#222;border-radius:12px;padding:20px;max-width:450px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.8);color:#fff;font-family:system-ui,-apple-system,sans-serif';
     
     const title = document.createElement('h2');
-    title.style.cssText = 'margin:0 0 15px 0;font-size:18px;color:#4dc49a';
+    title.style.cssText = 'margin:0 0 15px 0;font-size:22px;color:#4dc49a;text-align:center';
     title.textContent = z.name;
     
     const sw = this._hass.states[z.sw];
     const isOn = sw?.state === 'on';
+    const originalDur = z.dur ? parseFloat(this._hass.states[z.dur]?.state || 10) : 10;
+    let currentDur = originalDur;
     
     const status = document.createElement('div');
-    status.style.cssText = 'font-size:13px;margin-bottom:15px;padding:8px;background:rgba(77,196,154,0.1);border-radius:6px';
+    status.style.cssText = 'font-size:13px;margin-bottom:12px;padding:10px;background:rgba(77,196,154,0.1);border-radius:6px;text-align:center';
     status.innerHTML = `<strong>Status:</strong> ${isOn ? '🟢 ON' : '⚪ OFF'}`;
     
-    const duration = document.createElement('div');
-    duration.style.cssText = 'font-size:13px;margin-bottom:15px;padding:8px;background:rgba(77,196,154,0.1);border-radius:6px';
-    const dur = z.dur ? parseFloat(this._hass.states[z.dur]?.state || 10) : 10;
-    duration.innerHTML = `<strong>Duration:</strong> ${dur} min`;
+    // Duration adjustment with big buttons
+    const durSection = document.createElement('div');
+    durSection.style.cssText = 'margin:15px 0;padding:15px;background:rgba(77,196,154,0.08);border-radius:8px;text-align:center';
+    
+    const durLabel = document.createElement('div');
+    durLabel.style.cssText = 'font-size:12px;color:var(--secondary-text-color,#999);margin-bottom:10px;text-transform:uppercase;font-weight:600;letter-spacing:1px';
+    durLabel.textContent = 'Duration';
+    
+    const durDisplay = document.createElement('div');
+    durDisplay.style.cssText = 'font-size:42px;font-weight:700;color:#4dc49a;margin:10px 0;font-family:monospace';
+    durDisplay.textContent = currentDur;
+    
+    const durUnit = document.createElement('div');
+    durUnit.style.cssText = 'font-size:14px;color:var(--secondary-text-color,#999);margin-bottom:12px';
+    durUnit.textContent = 'minutes';
+    
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:12px;justify-content:center';
+    
+    const minusBtn = document.createElement('button');
+    minusBtn.style.cssText = 'width:50px;height:50px;border-radius:8px;border:none;background:#c23030;color:#fff;font-size:28px;font-weight:bold;cursor:pointer;transition:background 0.2s';
+    minusBtn.textContent = '−';
+    minusBtn.addEventListener('mouseover', () => minusBtn.style.background = '#e53935');
+    minusBtn.addEventListener('mouseout', () => minusBtn.style.background = '#c23030');
+    minusBtn.addEventListener('click', () => {
+      currentDur = Math.max(1, currentDur - 1);
+      durDisplay.textContent = currentDur;
+      if (z.dur) this._svc('input_number','set_value',{entity_id:z.dur,value:currentDur});
+    });
+    
+    const plusBtn = document.createElement('button');
+    plusBtn.style.cssText = 'width:50px;height:50px;border-radius:8px;border:none;background:#4dc49a;color:#1a1a1a;font-size:28px;font-weight:bold;cursor:pointer;transition:background 0.2s';
+    plusBtn.textContent = '+';
+    plusBtn.addEventListener('mouseover', () => plusBtn.style.background = '#5dd5ac');
+    plusBtn.addEventListener('mouseout', () => plusBtn.style.background = '#4dc49a');
+    plusBtn.addEventListener('click', () => {
+      currentDur = Math.min(60, currentDur + 1);
+      durDisplay.textContent = currentDur;
+      if (z.dur) this._svc('input_number','set_value',{entity_id:z.dur,value:currentDur});
+    });
+    
+    btnRow.append(minusBtn, plusBtn);
+    durSection.append(durLabel, durDisplay, durUnit, btnRow);
     
     const lastRun = document.createElement('div');
-    lastRun.style.cssText = 'font-size:13px;margin-bottom:15px;padding:8px;background:rgba(77,196,154,0.1);border-radius:6px';
+    lastRun.style.cssText = 'font-size:12px;margin-bottom:15px;padding:10px;background:rgba(77,196,154,0.1);border-radius:6px';
     const lastChanged = sw?.last_changed ? new Date(sw.last_changed).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'unknown';
     lastRun.innerHTML = `<strong>Last Activity:</strong> ${lastChanged}`;
     
     const buttons = document.createElement('div');
-    buttons.style.cssText = 'display:flex;gap:8px;margin-top:15px';
+    buttons.style.cssText = 'display:flex;gap:10px;margin-top:15px';
     
     const closeBtn = document.createElement('button');
-    closeBtn.style.cssText = 'flex:1;padding:8px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;border-radius:6px;cursor:pointer;font-weight:600';
+    closeBtn.style.cssText = 'flex:1;padding:10px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;border-radius:6px;cursor:pointer;font-weight:600;font-size:14px';
     closeBtn.textContent = 'Close';
     closeBtn.addEventListener('click', () => modal.remove());
     
     const toggleBtn = document.createElement('button');
-    toggleBtn.style.cssText = 'flex:1;padding:8px;background:'+(isOn ? '#c23030' : '#4dc49a')+';border:none;color:#fff;border-radius:6px;cursor:pointer;font-weight:600';
-    toggleBtn.textContent = isOn ? 'Turn Off' : 'Turn On';
+    toggleBtn.style.cssText = 'flex:1;padding:10px;background:'+(isOn ? '#c23030' : '#4dc49a')+';border:none;color:'+(isOn ? '#fff' : '#1a1a1a')+';border-radius:6px;cursor:pointer;font-weight:700;font-size:14px';
+    toggleBtn.textContent = isOn ? 'Turn Off' : 'Manual Run';
     toggleBtn.addEventListener('click', () => {
       if (z.sw) {
-        this._svc('switch', isOn ? 'turn_off' : 'turn_on', {entity_id: z.sw});
+        if (isOn) {
+          this._svc('switch', 'turn_off', {entity_id: z.sw});
+        } else {
+          // Start manual run with auto-stop
+          this._manualZoneRun(idx, z, currentDur, originalDur);
+        }
         modal.remove();
       }
     });
     
     buttons.append(closeBtn, toggleBtn);
-    content.append(title, status, duration, lastRun, buttons);
+    content.append(title, status, durSection, lastRun, buttons);
     modal.append(content);
     
     modal.addEventListener('click', (ev) => {
@@ -1553,6 +1607,36 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
     
     document.body.appendChild(modal);
+  }
+  
+  _manualZoneRun(idx, z, runDuration, originalDuration) {
+    if (!z.sw) return;
+    
+    // Turn on the zone
+    this._svc('switch', 'turn_on', {entity_id: z.sw});
+    
+    // Clear any existing timer for this zone
+    if (this._manualZoneTimers?.[idx]) clearTimeout(this._manualZoneTimers[idx]);
+    if (!this._manualZoneTimers) this._manualZoneTimers = {};
+    
+    // Set timer to auto-stop after runDuration minutes
+    const timerMs = runDuration * 60 * 1000;
+    this._manualZoneTimers[idx] = setTimeout(() => {
+      // Turn off the zone
+      this._svc('switch', 'turn_off', {entity_id: z.sw});
+      
+      // Restore original duration
+      if (z.dur && originalDuration !== runDuration) {
+        this._svc('input_number','set_value',{entity_id:z.dur,value:originalDuration});
+      }
+      
+      // Clear timer
+      delete this._manualZoneTimers[idx];
+      
+      console.log('[SprinklerCard] Manual run for '+z.name+' finished, duration reset to '+originalDuration+'min');
+    }, timerMs);
+    
+    console.log('[SprinklerCard] Manual run started: '+z.name+' for '+runDuration+'min (will auto-stop)');
   }
 
   _showLastRun() {
