@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.63';
+const CARD_VERSION = '2.9.64';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1644,17 +1644,31 @@ class SprinklerDashCardV2 extends HTMLElement {
     const body = r.getElementById('lastrun-body');
     const schedE = this._cfg.schedule_entity;
     
+    // DEBUG: Log what we're looking for
+    console.log('[SprinklerCard] Last Run Debug:', {schedE, exists: !!this._hass.states[schedE]});
+    
     if (!schedE || !this._hass.states[schedE]) {
-      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Scheduler not configured.</p>';
+      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">❌ Scheduler not configured or entity not found. Check ⚙️ Settings.</p>';
       r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
       return;
     }
 
     const schedState = this._hass.states[schedE];
-    const lastTriggered = schedState.attributes?.last_triggered;
+    console.log('[SprinklerCard] Scheduler state:', {state: schedState.state, attrs: Object.keys(schedState.attributes || {})});
+    
+    // Try multiple attribute names for last_triggered
+    let lastTriggered = schedState.attributes?.last_triggered || 
+                        schedState.attributes?.last_call_service_at ||
+                        schedState.attributes?.last_executed;
+    
+    // Fallback: check script.sprinkler last_triggered
+    if (!lastTriggered && this._hass.states['script.sprinkler']) {
+      lastTriggered = this._hass.states['script.sprinkler'].attributes?.last_triggered;
+      console.log('[SprinklerCard] Fell back to script.sprinkler last_triggered:', lastTriggered);
+    }
     
     if (!lastTriggered) {
-      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">No run recorded yet. Run the schedule to see details here.</p>';
+      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">⏳ No run recorded yet. Run the schedule to populate history.</p><p style="font-size:11px;color:#666;margin-top:10px">💡 Tip: Manual zone runs don't populate Last Run (they're manual, not scheduled).</p>';
       r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
       return;
     }
@@ -1663,8 +1677,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     const ts = new Date(lastTriggered).toLocaleString([], {weekday:'long',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
     let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
     
-    // Show which zones have recent activity (last ran within last 30 minutes)
-    const thirtyMinAgo = Date.now() - (30 * 60 * 1000);
+    // Show which zones have recent activity (last ran within last 2 hours)
+    const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
     const recentZones = [];
     const skipList = this._skipList();
     
@@ -1674,7 +1688,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       if (!sw || !sw.last_changed) return;
       
       const lastChanged = new Date(sw.last_changed).getTime();
-      if (lastChanged > thirtyMinAgo) {
+      if (lastChanged > twoHoursAgo) {
         recentZones.push({
           name: z.name,
           lastChanged: lastChanged,
@@ -1691,9 +1705,10 @@ class SprinklerDashCardV2 extends HTMLElement {
       if (ran.length) {
         html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
         ran.forEach(z => {
+          const timeAgo = this._formatTimeAgo(new Date(z.lastChanged));
           html += `<div class="lastrun-row">
             <span class="lastrun-zone">💧 ${z.name}</span>
-            <span class="lastrun-dur">✓</span>
+            <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${timeAgo}</span>
           </div>`;
         });
       }
@@ -1707,11 +1722,23 @@ class SprinklerDashCardV2 extends HTMLElement {
         });
       }
     } else {
-      html += '<p style="color:var(--secondary-text-color,#666);margin-top:10px">No zone activity in last 30 minutes.</p>';
+      html += '<p style="color:var(--secondary-text-color,#666);margin-top:10px">No zone activity in last 2 hours. Run the schedule to see history.</p>';
     }
     
     body.innerHTML = html;
     r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
+  }
+  
+  _formatTimeAgo(date) {
+    const now = Date.now();
+    const diffMs = now - date.getTime();
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffHour = Math.floor(diffMin / 60);
+    
+    if (diffMin < 1) return 'just now';
+    if (diffMin < 60) return diffMin + 'm ago';
+    if (diffHour < 24) return diffHour + 'h ago';
+    return Math.floor(diffHour / 24) + 'd ago';
   }
 
   // Last Run recording disabled — now uses scheduler's built-in last_triggered
