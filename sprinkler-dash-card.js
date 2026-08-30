@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.69';
+const CARD_VERSION = '2.9.70';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -140,10 +140,10 @@ class SprinklerDashCardV2 extends HTMLElement {
         stopBtn.style.display = running ? '' : 'none';
         startBtn.style.display = running ? 'none' : '';
       }
-      // log run to history when script finishes
-      if (prevScriptState === 'on' && scriptState === 'off') {
-        this._logRunToHistory();
-      }
+      // history logging disabled for now — focus on simple fallback
+      // if (prevScriptState === 'on' && scriptState === 'off') {
+      //   this._logRunToHistory();
+      // }
     }
 
     // rain auto-restore: if rain rule disabled the schedule, re-enable after rain_restore_hours
@@ -355,7 +355,6 @@ class SprinklerDashCardV2 extends HTMLElement {
       (s.attributes.entities||[]).includes('script.sprinkler')
     );
     const needsSkipHelper = !this._hass.states['input_text.sprinkler_skip_zones'];
-    const needsHistoryHelper = !this._hass.states['input_text.sprinkler_run_history'];
 
     const afterHelper = (helperJustCreated) => {
       if (needsScript || helperJustCreated) {
@@ -367,10 +366,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       }
     };
 
-    if (needsSkipHelper || needsHistoryHelper) {
-      const creates = [];
-      if (needsSkipHelper) creates.push(this._createSkipHelper());
-      if (needsHistoryHelper) creates.push(this._createHistoryHelper());
+    if (needsSkipHelper) {
+      const creates = [this._createSkipHelper()];
       Promise.all(creates).then(() => setTimeout(()=>afterHelper(true), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
     } else {
       afterHelper(false);
@@ -392,19 +389,20 @@ class SprinklerDashCardV2 extends HTMLElement {
   //   }
   // }
 
-  async _createHistoryHelper() {
-    try {
-      await this._hass.connection.sendMessagePromise({
-        type: 'input_text/create',
-        name: 'Sprinkler Run History',
-        max: 255, min: 0, mode: 'text', initial: '{}',
-        icon: 'mdi:history',
-      });
-      console.log('[SprinklerCard] created input_text.sprinkler_run_history');
-    } catch(e) {
-      console.warn('[SprinklerCard] could not auto-create run history helper', e);
-    }
-  }
+  // History helper creation disabled — using simpler approach
+  // async _createHistoryHelper() {
+  //   try {
+  //     await this._hass.connection.sendMessagePromise({
+  //       type: 'input_text/create',
+  //       name: 'Sprinkler Run History',
+  //       max: 255, min: 0, mode: 'text', initial: '{}',
+  //       icon: 'mdi:history',
+  //     });
+  //     console.log('[SprinklerCard] created input_text.sprinkler_run_history');
+  //   } catch(e) {
+  //     console.warn('[SprinklerCard] could not auto-create run history helper', e);
+  //   }
+  // }
 
   async _createSkipHelper() {
     // create input_text.sprinkler_skip_zones via the direct websocket helper-creation command
@@ -1663,52 +1661,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     console.log('[SprinklerCard] Manual run started: '+z.name+' for '+runDuration+'min (will auto-stop)');
   }
 
-  _logRunToHistory() {
-    const e = 'input_text.sprinkler_run_history';
-    if (!this._hass.states[e]) return;
-    
-    const skipList = this._skipList();
-    const now = new Date().toISOString();
-    
-    // Get zones that ran (activity since last 2 hours)
-    const twoHoursAgo = Date.now() - (2 * 60 * 60 * 1000);
-    const ranZones = [];
-    
-    this._activeZones().forEach(z => {
-      if (!z.sw || z.schedule_enabled === false) return;
-      const sw = this._hass.states[z.sw];
-      if (!sw || !sw.last_changed) return;
-      
-      const lastChanged = new Date(sw.last_changed).getTime();
-      if (lastChanged > twoHoursAgo && !skipList.includes(z.sw)) {
-        const dur = z.dur ? parseFloat(this._hass.states[z.dur]?.state || 10) : 10;
-        ranZones.push({n: z.name.substring(0,15), d: dur});
-      }
-    });
-    
-    if (ranZones.length === 0) return; // Don't log if no zones ran
-    
-    // Create run entry
-    const runEntry = {ts: now, z: ranZones};
-    
-    // Get existing history and add new run
-    const existing = this._hass.states[e]?.state || '{}';
-    let history = {};
-    try {
-      history = JSON.parse(existing);
-    } catch(err) {
-      history = {};
-    }
-    
-    // Keep last 10 runs, add new one
-    const runs = history.runs || [];
-    runs.unshift(runEntry);
-    if (runs.length > 10) runs.pop();
-    
-    const data = JSON.stringify({runs: runs});
-    this._svc('input_text', 'set_value', {entity_id: e, value: data.substring(0, 255)});
-    console.log('[SprinklerCard] Logged run to history:', runEntry);
-  }
+  // Run history logging disabled
+  // _logRunToHistory() { ... }
 
   _showLastRun() {
     const r = this.shadowRoot;
