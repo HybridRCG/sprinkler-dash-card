@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.71';
+const CARD_VERSION = '2.9.72';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1668,126 +1668,52 @@ class SprinklerDashCardV2 extends HTMLElement {
     const r = this.shadowRoot;
     const body = r.getElementById('lastrun-body');
     
-    // Try to get run history
-    const historyE = 'input_text.sprinkler_run_history';
-    const historyState = this._hass.states[historyE];
-    let html = '';
-    
-    if (historyState) {
-      try {
-        const historyData = JSON.parse(historyState.state || '{}');
-        const runs = historyData.runs || [];
-        
-        if (runs.length === 0) {
-          body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">⏳ No runs recorded yet. Run the schedule to populate history.</p>';
-          r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
-          return;
-        }
-        
-        // Display all runs in history (newest first)
-        runs.forEach((run, idx) => {
-          const ts = new Date(run.ts).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-          const timeAgo = this._formatTimeAgo(new Date(run.ts));
-          
-          if (idx === 0) {
-            html += `<div class="lastrun-ts">📅 ${ts} (${timeAgo})</div>`;
-          } else {
-            html += `<div class="lastrun-ts" style="margin-top:15px;opacity:0.7">📅 ${ts} (${timeAgo})</div>`;
-          }
-          
-          html += `<div class="lastrun-section-lbl">Watered (${run.z?.length || 0})</div>`;
-          (run.z || []).forEach(z => {
-            html += `<div class="lastrun-row">
-              <span class="lastrun-zone">💧 ${z.n}</span>
-              <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${z.d}m</span>
-            </div>`;
-          });
-        });
-        
-        body.innerHTML = html;
-        r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
-        return;
-      } catch(e) {
-        console.warn('[SprinklerCard] Error parsing run history:', e);
-      }
-    }
-    
-    // Fallback to scheduler last_triggered if history not available
-    const schedE = this._cfg.schedule_entity;
-    console.log('[SprinklerCard] Last Run Debug:', {schedE, exists: !!this._hass.states[schedE]});
-    
-    if (!schedE || !this._hass.states[schedE]) {
-      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">❌ Scheduler not configured or entity not found. Check ⚙️ Settings.</p>';
-      r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
-      return;
-    }
-
-    const schedState = this._hass.states[schedE];
-    console.log('[SprinklerCard] Scheduler state:', {state: schedState.state, attrs: Object.keys(schedState.attributes || {})});
-    
-    // Try multiple attribute names for last_triggered
-    let lastTriggered = schedState.attributes?.last_triggered || 
-                        schedState.attributes?.last_call_service_at ||
-                        schedState.attributes?.last_executed;
-    
-    // Fallback: check script.sprinkler last_triggered
-    if (!lastTriggered && this._hass.states['script.sprinkler']) {
-      lastTriggered = this._hass.states['script.sprinkler'].attributes?.last_triggered;
-      console.log('[SprinklerCard] Fell back to script.sprinkler last_triggered:', lastTriggered);
-    }
+    // Get last triggered time
+    const scriptE = 'script.sprinkler';
+    const scriptState = this._hass.states[scriptE];
+    const lastTriggered = scriptState?.attributes?.last_triggered;
     
     if (!lastTriggered) {
-      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">⏳ No run recorded yet. Run the schedule to populate history.</p><p style="font-size:11px;color:#666;margin-top:10px">💡 Tip: Manual zone runs do not populate Last Run (manual, not scheduled).</p>';
+      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">⏳ No scheduled run found. Run the schedule to populate this view.</p>';
       r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
       return;
     }
-
-    // Show when schedule last ran
-    const ts = new Date(lastTriggered).toLocaleString([], {weekday:'long',year:'numeric',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-    html = `<div class="lastrun-ts">📅 ${ts}</div>`;
     
-    // Show which zones ran since the last scheduled run
-    const lastTriggeredTime = new Date(lastTriggered).getTime();
-    const recentZones = [];
+    // Show timestamp
+    const ts = new Date(lastTriggered).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+    let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
+    
+    // Show all configured zones
+    const allZones = this._activeZones().filter(z => z.sw && z.schedule_enabled !== false);
     const skipList = this._skipList();
     
-    this._activeZones().forEach(z => {
-      if (!z.sw || z.schedule_enabled === false) return;
-      const sw = this._hass.states[z.sw];
-      if (!sw || !sw.last_changed) return;
-      
-      const lastChanged = new Date(sw.last_changed).getTime();
-      // Show zones that changed since the last triggered time (or within 24 hours if older)
-      const oneDayAgo = Date.now() - (24 * 60 * 60 * 1000);
-      if (lastChanged >= lastTriggeredTime - (5 * 60 * 1000) || lastChanged > oneDayAgo) { // 5 min buffer before script start
-        recentZones.push({
-          name: z.name,
-          lastChanged: lastChanged,
-          skipped: skipList.includes(z.sw)
-        });
-      }
-    });
-
-    // Show all configured zones (regardless of activity detection)
-    const allZones = this._activeZones().filter(z => z.sw && z.schedule_enabled !== false);
+    if (allZones.length === 0) {
+      html += '<p style="color:var(--secondary-text-color,#666);margin-top:10px">No zones configured.</p>';
+      body.innerHTML = html;
+      r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
+      return;
+    }
+    
     const ran = allZones.filter(z => !skipList.includes(z.sw));
     const skipped = allZones.filter(z => skipList.includes(z.sw));
     
+    // Show zones that ran
     if (ran.length > 0) {
-      html += `<div class="lastrun-section-lbl">Scheduled (${ran.length})</div>`;
+      html += `<div class="lastrun-section-lbl">Zones (${ran.length})</div>`;
       ran.forEach(z => {
-        let durText = '';
+        let dur = '—';
         if (z.dur && this._hass.states[z.dur]) {
           const durVal = parseFloat(this._hass.states[z.dur].state || 10);
-          durText = durVal + 'm';
+          dur = durVal + 'm';
         }
         html += `<div class="lastrun-row">
           <span class="lastrun-zone">💧 ${z.name}</span>
-          <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${durText || '—'}</span>
+          <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${dur}</span>
         </div>`;
       });
     }
     
+    // Show skipped zones
     if (skipped.length > 0) {
       html += `<div class="lastrun-section-lbl" style="margin-top:10px">Skipped (${skipped.length})</div>`;
       skipped.forEach(z => {
@@ -1801,6 +1727,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     body.innerHTML = html;
     r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
   }
+
   
   _formatTimeAgo(date) {
     const now = Date.now();
