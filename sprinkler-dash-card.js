@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.74';
+const CARD_VERSION = '2.9.75';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -1724,9 +1724,14 @@ class SprinklerDashCardV2 extends HTMLElement {
     const ts = new Date(lastTriggered).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
     let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
     
-    // Show all configured zones
-    const allZones = this._activeZones().filter(z => z.sw && z.schedule_enabled !== false);
+    // Only show zones whose switch actually changed state near this run's start time.
+    // This avoids listing zones that are "configured" but didn't actually water
+    // (e.g. toggled off, skipped that day, or the config changed since).
+    const allZones = this._activeZones().filter(z => z.sw);
     const skipList = this._skipList();
+    const runStart = new Date(lastTriggered).getTime();
+    const windowStart = runStart - (2 * 60 * 1000); // 2 min buffer before
+    const windowEnd = runStart + (4 * 60 * 60 * 1000); // up to 4h after (covers long sequential runs)
     
     if (allZones.length === 0) {
       html += '<p style="color:var(--secondary-text-color,#666);margin-top:10px">No zones configured.</p>';
@@ -1735,12 +1740,20 @@ class SprinklerDashCardV2 extends HTMLElement {
       return;
     }
     
-    const ran = allZones.filter(z => !skipList.includes(z.sw));
-    const skipped = allZones.filter(z => skipList.includes(z.sw));
+    const ran = [];
+    const notRun = [];
+    allZones.forEach(z => {
+      const sw = this._hass.states[z.sw];
+      const lastChanged = sw?.last_changed ? new Date(sw.last_changed).getTime() : 0;
+      const actuallyRan = lastChanged >= windowStart && lastChanged <= windowEnd;
+      if (actuallyRan) ran.push(z); else notRun.push(z);
+    });
+    const skipped = notRun.filter(z => skipList.includes(z.sw));
+    const missing = notRun.filter(z => !skipList.includes(z.sw));
     
-    // Show zones that ran
+    // Show zones that actually ran
     if (ran.length > 0) {
-      html += `<div class="lastrun-section-lbl">Zones (${ran.length})</div>`;
+      html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
       ran.forEach(z => {
         let dur = '—';
         if (z.dur && this._hass.states[z.dur]) {
@@ -1752,15 +1765,31 @@ class SprinklerDashCardV2 extends HTMLElement {
           <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${dur}</span>
         </div>`;
       });
+    } else {
+      html += '<p style="color:var(--secondary-text-color,#666);margin-top:4px">No zones matched this run\'s time window.</p>';
     }
     
-    // Show skipped zones
+    // Show explicitly skipped zones
     if (skipped.length > 0) {
       html += `<div class="lastrun-section-lbl" style="margin-top:10px">Skipped (${skipped.length})</div>`;
       skipped.forEach(z => {
         html += `<div class="lastrun-row">
           <span class="lastrun-skipped">⏭ ${z.name}</span>
           <span class="lastrun-dur">—</span>
+        </div>`;
+      });
+    }
+    
+    // Show zones that are configured/enabled but show no activity near this run
+    // (e.g. haven't run in a while, toggled off individually, etc.)
+    if (missing.length > 0) {
+      html += `<div class="lastrun-section-lbl" style="margin-top:10px">No recent activity (${missing.length})</div>`;
+      missing.forEach(z => {
+        const sw = this._hass.states[z.sw];
+        const lastAgo = sw?.last_changed ? this._formatTimeAgo(new Date(sw.last_changed)) : 'never';
+        html += `<div class="lastrun-row">
+          <span class="lastrun-skipped">⚪ ${z.name}</span>
+          <span class="lastrun-dur" style="font-size:11px">${lastAgo}</span>
         </div>`;
       });
     }

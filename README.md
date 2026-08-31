@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, and everything else is configured and auto-created from within the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.9.74-green)
+![Version](https://img.shields.io/badge/version-v2.9.75-green)
 ![HACS](https://img.shields.io/badge/HACS-Default-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
@@ -236,6 +236,7 @@ Tap **↻** in the Last Run header to refresh the data after a schedule complete
 
 | Version | Changes |
 |---|---|
+| v2.9.75 | **FIX (correctness):** Last Run no longer assumes every configured zone ran. It now checks each zone's switch `last_changed` against the scheduled run's time window and only lists a zone under "Watered" if it actually toggled near that run. Zones with no activity near the run show separately under "No recent activity" with how long ago they last changed — surfaces zones that silently stopped running (e.g. toggled off) instead of hiding it. |
 | v2.9.74 | **NEW:** Manual run history now PERSISTS across page refreshes! Added `input_text.sprinkler_manual_log` helper (auto-created) that saves each manual run. Loaded automatically on card startup, so manual runs stay visible in Last Run even after reloading the page. |
 | v2.9.73 | Added manual run display back to Last Run. Shows both scheduled runs (with all zones) and recent manual runs (with 🔧 icon, duration, timestamp). Perfect combo! |
 | v2.9.72 | **COMPLETE REWRITE:** Last Run completely rewritten. Bulletproof fallback to script.sprinkler.last_triggered. Shows all configured zones + durations. Simple, direct, no fancy logic. This version WILL work! |
