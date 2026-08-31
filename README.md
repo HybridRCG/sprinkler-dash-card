@@ -36,16 +36,15 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 **Zero setup scripting**
 - Auto-creates `script.sprinkler` on first load, built from your configured zones
 - Auto-creates the Scheduler entity (defaults to Mon/Wed/Fri at 06:00)
-- Auto-creates all required helper entities for skip zones and run history
+- Auto-creates required helper entities for skip-next-run and manual run logging
 - Script silently rebuilds whenever zones are changed, reordered, or toggled
 
 **Zone control**
 - Up to 12 configurable zones — 2-column grid with toggle, progress bar, countdown timer, and 1-minute adjustable duration
-- Manual zone on with auto-stop timer — set duration before turning on, card stops the valve automatically
-- Zone expand popup — tap any zone tile to open a large overlay with big controls (toggle, duration, skip, schedule toggle, last run)
+- Zone expand popup — tap any zone tile to open a large overlay with big +/− duration buttons, status, last activity, and a **Manual Run** button
+- Manual Run auto-stop — starts the zone, runs it for exactly the duration you set, turns it off automatically, and restores the zone's original scheduled duration afterwards — no need to remember to turn it off
 - Zone last-run badge — shows "last: Xm/Xh/Xd ago" on each tile
-- Zone run order indicator — during active schedule, sequence badges show green (current), ✓ done (persists 3h after run), amber (queued)
-- Blue sequence badge — persists 8 hours after a manual zone run (stored in auto-created helper, survives reloads)
+- Smart Resume — if Home Assistant restarts mid-run, the card detects any zone still on, resumes it if still within its duration, or stops it immediately if it overran
 - Per-zone schedule toggle — tick/untick each zone to include or exclude from scheduled runs
 - Per-zone skip next run — one-tap skip for the next run only, self-clearing after the schedule fires
 
@@ -56,8 +55,9 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 - Stop Schedule button — immediately stops the script and closes all valves (with confirmation)
 
 **Run history**
-- Last Run popup — shows up to 12 previous runs with timestamp, zones watered, durations, and skipped zones
-- One-tap "Set up run logging" creates a HA automation that records every run automatically, even when the card is not open
+- Last Run popup — shows the most recent scheduled run's timestamp, then checks each zone's actual switch activity against that run's time window so it only lists zones that genuinely watered (not just zones that happen to be enabled)
+- Skipped zones and zones with no recent activity are shown in their own sections, so a zone that's quietly stopped running (e.g. toggled off, disconnected) is surfaced instead of hidden
+- Manual runs are logged separately with a 🔧 icon, the duration used, and how long ago they ran — persisted via an auto-created helper so they survive page refreshes
 
 **Info bar**
 - 4 configurable header slots — label, searchable MDI icon (7000+ with live preview), up to 2 sensors each
@@ -217,11 +217,15 @@ The card auto-creates `input_text.sprinkler_skip_zones` to track this — no set
 
 ## Run History
 
-Tap **Last Run** to see recent schedule runs with timestamps, zone durations and skipped zones.
+Tap **Last Run** to see what happened during the most recent scheduled run.
 
-On first use, tap **⚙️ Set up run logging** to create a HA automation that records every run automatically — even when the card is not open. Stores up to 12 runs (approximately one month at 3 runs per week).
+- **Timestamp** — when the schedule last triggered (from `script.sprinkler`'s `last_triggered` attribute)
+- **Watered** — zones whose switch actually changed state within that run's time window (a couple of minutes before start, up to 4 hours after, to allow for long sequential runs). Only zones genuinely detected as active during that window are listed here.
+- **Skipped** — zones that were marked "skip next run" for that run
+- **No recent activity** — zones that are configured/enabled but show no switch activity near the last run, along with how long ago they last changed. This is the section to check if a zone has silently stopped watering (e.g. it was toggled off, its switch is unavailable, or it's disconnected).
+- **Manual Runs** — any zones run manually via the zone expand popup, shown with a 🔧 icon, the duration used, and how long ago it ran. This is stored in an auto-created `input_text.sprinkler_manual_log` helper so it survives page refreshes.
 
-Tap **↻** in the Last Run header to refresh the data after a schedule completes (there is a short delay between the schedule finishing and the helper updating).
+No manual setup is required — the manual run log helper is created automatically on first load.
 
 ---
 
@@ -261,48 +265,7 @@ Tap **↻** in the Last Run header to refresh the data after a schedule complete
 | v2.9.53 | **NEW:** Time picker is now a beautiful popout modal with large hour/minute spinners — tap time → modal appears → adjust with ▲/▼ or type → tap Save to close and apply changes |
 | v2.9.52 | Fixed next-run countdown label — shows "in Xh Xm" instead of "Tonight" for clarity |
 | v2.9.51 | Replaced broken time picker with proper dual-spinner UI for desktop & mobile |
-| v2.9.50 | Removed buggy run history feature; simplified Last Run to static message |
-| v2.9.35 | Seasonal rain restore — auto summer/winter hours, manual override, reset buttons |
-| v2.9.34 | Skip day check — only shows skipped day if it is a scheduled run day |
-| v2.9.33 | Rain postpone countdown shows which scheduled day will be skipped |
-| v2.9.30 | Rain postpone countdown — Resumes in Xh Xm with live icon |
-| v2.9.28 | Persistent rain auto-restore across HA restarts |
-| v2.9.27 | Title shows Sprinklers — Postponed in blue when rain disables schedule |
-| v2.9.26 | Friendly rain postponed message in schedule section |
-| v2.9.23 | Countdown cleaner — relative time with day context |
-| v2.9.18 | Smoother zone transition animations |
-| v2.9.17 | Warn on unsaved settings changes before close |
-| v2.9.16 | Scroll to settings panel on small screens |
-| v2.9.15 | Configurable tick mark duration in settings |
-| v2.9.14 | Last Run auto-refreshes after schedule completes |
-| v2.9.11 | Fix false tick marks after HA restart |
-| v2.9.4 | Zone expand popup; blue badge 8h after manual run |
-| v2.9.9 | Manual zone timer persists across card reloads via stored stop time; tile toggle uses confirmWithTimer |
-| v2.9.8 | Removed auto-stop from _updateZones — was cancelling scheduled runs |
-| v2.9.7 | Zone expand popup uses proper manual timer with auto-stop; auto-stop buffer extended 2 min |
-| v2.9.6 | Fixed "Tonight" label showing when run is less than 2 hours away |
-| v2.9.5 | Refresh button in Last Run popup; fixed stale log entries |
-| v2.9.4 | Zone expand popup (tap tile for big controls); blue badge 8h after manual run |
-| v2.9.3 | Green tick on completed zones persists 3h after schedule finishes |
-| v2.9.2 | Fixed premature manual zone auto-stop after card reload |
-| v2.9.1 | Mobile time editor scrolls into view when keyboard opens |
-| v2.9.0 | Replaced native time picker with HH/MM number inputs — no mobile scroll issues |
-| v2.8.9 | Fixed auto-stop operator bug |
-| v2.8.8 | Auto-stop manual zone timer even after card reload |
-| v2.8.7 | Card reload no longer interrupts a running schedule |
-| v2.8.4 | One-tap "Set up run logging" creates HA automation for persistent history |
-| v2.8.3 | Ring buffer run history — 12 runs stored in auto-created helpers |
-| v2.8.0 | Updated in-card setup guide with all current features |
-| v2.7.9 | All zone duration steps set to 1 minute |
-| v2.7.7 | Zone run order indicator fully working |
-| v2.7.0 | Zone run order indicator; manual zone timer with auto-stop |
-| v2.6.0 | Zone run order badges; manual zone timer; HACS validation |
-| v2.5.5 | Mobile time edit — HH/MM number inputs |
-| v2.5.0 | Stop Schedule button; Last Run popup; zone last-run badges; rain auto-restore |
-| v2.4.0 | Per-zone skip next run; auto-creates skip helper |
-| v2.3.0 | White section headings; title-case info bar values; unified dash separator |
-| v2.2.0 | Confirmation popups; script delay format fixed |
-| v2.1.0 | Settings persist via websocket |
+| v2.9.50 and earlier | Foundational features: auto-created script/scheduler, zone grid with progress bars and duration steppers, per-zone schedule toggle and skip-next-run, rain auto-disable/auto-restore with seasonal hours, Jojo low-level shutoff, zone run order badges, manual zone timer with auto-stop, mobile-friendly time editor, drag-to-reorder zones, websocket-persisted settings, confirmation popups, and the original ring-buffer run history. See [full release history](../../releases) for the complete list. |
 | v2.0.0 | Auto-creates script and Scheduler; zone schedule toggle; sticky settings |
 | v1.0.0 | Initial release |
 
