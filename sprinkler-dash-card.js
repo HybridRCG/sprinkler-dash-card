@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.77';
+const CARD_VERSION = '2.9.78';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -519,7 +519,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     .lastrun-dur{color:var(--secondary-text-color,#666);font-size:11px}
     .zprog-track{height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;margin-bottom:4px}
     .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width .9s linear}
-    .zstatus-row{display:flex;gap:8px;align-items:center;margin-bottom:5px;min-height:14px}
+    .zstatus-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px;min-height:14px}
     .zstat{font-size:11px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:14px}
     .zstat--on{color:#4dc49a}
     .pulse{display:inline-block;width:5px;height:5px;border-radius:50%;background:#4dc49a;flex-shrink:0;animation:pulse 1.2s ease-in-out infinite}
