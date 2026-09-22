@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.76';
+const CARD_VERSION = '2.9.77';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -499,7 +499,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zone--skip::before{background:repeating-linear-gradient(90deg,#ffb43c 0 6px,transparent 6px 12px)!important}
     .hbtn--stop-sched{background:rgba(210,45,45,0.85);color:#fff}
     .hbtn--lastrun{background:rgba(255,255,255,0.92);color:#0a5c45}
-    .zlast{font-size:10px;color:var(--secondary-text-color,#666);margin-top:2px;min-height:12px}
+    .zlast{font-size:10px;color:var(--secondary-text-color,#666);min-height:12px}
     .zlast--recent{color:#4dc49a}
     /* last-run modal */
     .lastrun-modal{display:none;position:fixed;inset:0;z-index:10000;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;padding:16px}
@@ -519,7 +519,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     .lastrun-dur{color:var(--secondary-text-color,#666);font-size:11px}
     .zprog-track{height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden;margin-bottom:4px}
     .zprog-fill{height:100%;width:0%;background:linear-gradient(90deg,#1a8a64,#4dc49a);border-radius:2px;transition:width .9s linear}
-    .zstat{font-size:11px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:14px;margin-bottom:5px}
+    .zstatus-row{display:flex;gap:8px;align-items:center;margin-bottom:5px;min-height:14px}
+    .zstat{font-size:11px;color:var(--secondary-text-color,#666);display:flex;align-items:center;gap:4px;min-height:14px}
     .zstat--on{color:#4dc49a}
     .pulse{display:inline-block;width:5px;height:5px;border-radius:50%;background:#4dc49a;flex-shrink:0;animation:pulse 1.2s ease-in-out infinite}
     @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(1.5)}}
@@ -935,6 +936,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       const pt=document.createElement('div'); pt.className='zprog-track';
       const pf=document.createElement('div'); pf.className='zprog-fill'; pf.id='zprog-'+i; pt.appendChild(pf);
       const stat=document.createElement('div'); stat.className='zstat'; stat.id='zstat-'+i; stat.textContent='Ready';
+      const zlast=document.createElement('div'); zlast.className='zlast'; zlast.id='zlast-'+i;
+      const statusRow=document.createElement('div'); statusRow.className='zstatus-row'; statusRow.append(stat,zlast);
       const dv=document.createElement('div'); dv.className='zdivider';
       const dr=document.createElement('div'); dr.className='zdur-row';
       const dl=document.createElement('span'); dl.className='zdur-lbl'; dl.textContent='Min';
@@ -945,8 +948,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const bm=document.createElement('button'); bm.className='zdur-btn'; bm.textContent='-';
       const bp=document.createElement('button'); bp.className='zdur-btn'; bp.textContent='+';
       db.append(bm,bp); dr.append(dl,di,du,db);
-      const zlast=document.createElement('div'); zlast.className='zlast'; zlast.id='zlast-'+i;
-      el.append(top,pt,stat,zlast,dv,dr); grid.appendChild(el);
+      el.append(top,pt,statusRow,dv,dr); grid.appendChild(el);
       
       // Click zone card to expand details
       el.addEventListener('click', (ev) => {
