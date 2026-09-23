@@ -1,4 +1,4 @@
-const CARD_VERSION = '2.9.78';
+const CARD_VERSION = '2.9.80';
 const MAX_ZONES = 12;
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
@@ -154,10 +154,20 @@ class SprinklerDashCardV2 extends HTMLElement {
         const schedState = hass.states[schedE];
         const rainVal = parseFloat(hass.states[rainE]?.state || 0);
         const rainThresh = this._cfg.rain_threshold || 5;
-        // if schedule is off AND rain is now below threshold AND was disabled by rain rule, restore immediately
-        if (schedState?.state === 'off' && rainVal < rainThresh && this._rainDisabledAt) {
-          this._rainDisabledAt = null;
-          this._svc('switch', 'turn_on', {entity_id: schedE});
+        // if schedule is off AND rain is now below threshold, manage the restore delay
+        if (schedState?.state === 'off' && rainVal < rainThresh) {
+          // if we don't know when rain disabled it, assume it was just now (start the clock)
+          if (!this._rainDisabledAt) {
+            this._rainDisabledAt = Date.now();
+          } else {
+            // check if enough time has passed since rain disabled it
+            const hoursElapsed = (Date.now() - this._rainDisabledAt) / 3600000;
+            const restoreHours = this._cfg.rain_restore_hours || 48;
+            if (hoursElapsed >= restoreHours) {
+              this._rainDisabledAt = null;
+              this._svc('switch', 'turn_on', {entity_id: schedE});
+            }
+          }
         }
       }
     }
