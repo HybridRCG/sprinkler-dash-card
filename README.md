@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, and everything else is configured and auto-created from within the card UI.
 
-![Version](https://img.shields.io/badge/version-v3.0.2-green)
+![Version](https://img.shields.io/badge/version-v3.0.3-green)
 ![HACS](https://img.shields.io/badge/HACS-Default-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
@@ -247,6 +247,7 @@ No manual setup is required — the manual run log helper is created automatical
 
 | Version | Changes |
 |---|---|
+| v3.0.3 | Info bar: the tank slot keeps its `4,650 L - 95%` format and low-level warning colour when Sensor 2 is the sensor chosen in **Jojo level %** (e.g. a stable template sensor), not only `*liquid_level*` sensors. |
 | v3.0.2 | **Jojo low % is now the single source of truth** — the controller uses the card setting for the tank shutoff. New settings: **Jojo level %** (pick the level sensor the shutoff watches — e.g. a smoothed/stable template sensor) and **Notify** (e.g. `notify.whatsapp`) for tank-low and stuck-valve alerts. Rain limit / Rain restore / Jojo low % now save as soon as you change them (previously only via 💾 Save). |
 | v3.0.1 | **FIX:** Tank low-level shutoff now requires the level to stay below the threshold for 2 minutes. Level sensors can glitch (e.g. 48% → 30% → 48% within seconds); a single bad reading used to cancel runs / switch the schedule off. |
 | v3.0.0 | **MAJOR — watering now runs inside Home Assistant.** Fixes: (1) a HA restart mid-schedule killed `script.sprinkler`, so the remaining zones never ran — runs now use a persistent queue and resume after a restart; (2) Manual Run relied on a browser `setTimeout`, so closing the dashboard, switching view or a sleeping phone left the zone on — every zone now has a restoring `timer.sprinkler_zone_N` and the auto-generated `automation.sprinkler_controller` closes the valve; zones switched on from the toggle or the Sonoff app now auto-stop too; (3) skip-list and manual-log helpers were created with an `initial` value, so HA wiped them on every restart — the card now repairs them; (4) cancelling a confirm popup left its OK handler attached, so the next confirm could also fire the cancelled action; (5) rain auto-restore only ran while a dashboard was open and could re-enable a schedule you (or the tank shutoff) had turned off; (6) rain/tank rules fired service calls every second from every open browser. Also: valve-close verify + retry with notification, per-minute watchdog, countdowns from HA timers, "Queued" badges, Last Run shows actual watered time from history, Manual Run duration no longer changes the scheduled duration. |

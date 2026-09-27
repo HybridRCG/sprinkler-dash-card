@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.0.2';
+const CARD_VERSION = '3.0.3';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -2014,7 +2014,8 @@ class SprinklerDashCardV2 extends HTMLElement {
             const numVal=parseFloat(val1)||0;
             if (numVal>=rainThresh && this._cfg.rules?.rain_disable_schedule!==false) warn=true;
           }
-          if (s2 && slot.sensor2.includes('liquid_level')) {
+          const isLevel = s2 && (slot.sensor2.includes('liquid_level') || slot.sensor2 === this._cfg.jojo_level_sensor);
+          if (isLevel) {
             const pct=parseFloat(s2.state);
             if (pct<jojoLow && this._cfg.rules?.jojo_shutoff_zones!==false) {
               warn=true;
