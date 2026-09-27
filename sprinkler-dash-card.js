@@ -1,5 +1,22 @@
-const CARD_VERSION = '2.9.80';
+const CARD_VERSION = '3.0.0';
 const MAX_ZONES = 12;
+// ── Server-side engine ──────────────────────────────────────────────
+// Everything that must keep working when no browser is open (or when HA
+// restarts) lives in Home Assistant itself:
+//   timer.sprinkler_zone_N          restore:true timers — one per zone position
+//   input_text.sprinkler_queue      "run:3,4,5" while a schedule run is in progress
+//   input_text.sprinkler_rain_pause ISO time the rain rule paused the schedule
+//   automation.sprinkler_controller auto-generated from the card config
+const ENGINE_VERSION = 3;
+const CONTROLLER_ID = 'sprinkler_dash_controller';
+const QUEUE_E = 'input_text.sprinkler_queue';
+const RAIN_PAUSE_E = 'input_text.sprinkler_rain_pause';
+const SKIP_E = 'input_text.sprinkler_skip_zones';
+const MANUAL_LOG_E = 'input_text.sprinkler_manual_log';
+const ADVANCE_EVENT = 'sprinkler_dash_advance';
+const zoneTimer = (i) => 'timer.sprinkler_zone_' + (i + 1);
+const hhmm00 = (mins) => String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0') + ':00';
+const durToSecs = (d) => { if (!d) return 0; const p = String(d).split(':').map(Number); return p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : (parseFloat(d) || 0); };
 const DEFAULT_META_SLOTS = [
   { label:'Rain last 24h', icon:'weather-rainy',      sensor1:'sensor.gw2000a_v2_1_8_event_rain_rate_piezo', sensor2:'',                                    enabled:true },
   { label:'Jojo Level',    icon:'water-well',         sensor1:'sensor.jojo_liters_left',                     sensor2:'sensor.jojo_tank_level_liquid_level', enabled:true },
@@ -46,10 +63,10 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._cfg = null;
     this._hass = null;
     this._built = false;
-    this._onTimes = {};
-    this._prevDurVals = {};
-    this._manualZoneTimers = {};
-    this._manualRunLog = {};;
+    this._manualRunLog = [];
+    this._engineChecked = false;
+    this._engineBusy = false;
+    this._engineRebuildTimer = null;
     this._editingTime = false;
     this._showConfig = false;
     this._cfgDragSrc = null;
@@ -62,7 +79,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._scriptChecked = false;
     this._pendingEdits = {};
     this._saveDebounce = null;
-    this._rainDisabledAt = null; // key: 'zone-N-name' etc, value: current typed value
   }
 
   setConfig(config) {
@@ -115,64 +131,40 @@ class SprinklerDashCardV2 extends HTMLElement {
   }
 
   connectedCallback() { this._tickInterval = setInterval(()=>this._tick(), 1000); }
-  disconnectedCallback() { 
-    clearInterval(this._tickInterval);
-    // Clean up any pending manual zone timers
-    if (this._manualZoneTimers) Object.values(this._manualZoneTimers).forEach(t => clearTimeout(t));
-  }
+  disconnectedCallback() { clearInterval(this._tickInterval); }
 
   set hass(hass) {
     const prevHass = this._hass;
     this._hass = hass;
     if (this._allEntities.length === 0) this._allEntities = Object.keys(hass.states).sort();
     if (!this._mdiLoaded) this._loadMdiIcons();
-    if (!this._built) { this._buildShell(); this._built=true; this._checkResumeZones(); this._loadManualLog(); }
-    this._ensureSprinklerScript();
+    if (!this._built) { this._buildShell(); this._built=true; this._loadManualLog(); }
+    if (!this._engineChecked) { this._engineChecked = true; this._ensureEngine(); }
 
-    // toggle Stop Schedule / Start Schedule based on script state
-    const scriptState = hass.states['script.sprinkler']?.state;
-    const prevScriptState = prevHass?.states['script.sprinkler']?.state;
-    if (scriptState !== prevScriptState) {
+    // Stop / Start button follows the server-side run queue (survives restarts)
+    const running = this._isRunActive();
+    if (running !== this._lastRunning) {
+      this._lastRunning = running;
       const stopBtn = this.shadowRoot.getElementById('btn-stop-sched');
       const startBtn = this.shadowRoot.getElementById('btn-start');
       if (stopBtn && startBtn) {
-        const running = scriptState === 'on';
         stopBtn.style.display = running ? '' : 'none';
         startBtn.style.display = running ? 'none' : '';
       }
-      // history logging disabled for now — focus on simple fallback
-      // if (prevScriptState === 'on' && scriptState === 'off') {
-      //   this._logRunToHistory();
-      // }
     }
-
-    // rain auto-restore: if rain rule disabled the schedule, re-enable when rain drops below threshold
-    if (this._cfg.rules?.rain_auto_restore !== false) {
-      const schedE = this._cfg.schedule_entity;
-      const rainE = this._cfg.rain_sensor;
-      if (schedE && rainE) {
-        const schedState = hass.states[schedE];
-        const rainVal = parseFloat(hass.states[rainE]?.state || 0);
-        const rainThresh = this._cfg.rain_threshold || 5;
-        // if schedule is off AND rain is now below threshold, manage the restore delay
-        if (schedState?.state === 'off' && rainVal < rainThresh) {
-          // if we don't know when rain disabled it, assume it was just now (start the clock)
-          if (!this._rainDisabledAt) {
-            this._rainDisabledAt = Date.now();
-          } else {
-            // check if enough time has passed since rain disabled it
-            const hoursElapsed = (Date.now() - this._rainDisabledAt) / 3600000;
-            const restoreHours = this._cfg.rain_restore_hours || 48;
-            if (hoursElapsed >= restoreHours) {
-              this._rainDisabledAt = null;
-              this._svc('switch', 'turn_on', {entity_id: schedE});
-            }
-          }
-        }
-      }
-    }
+    if (prevHass && prevHass.states[MANUAL_LOG_E]?.state !== hass.states[MANUAL_LOG_E]?.state) this._loadManualLog();
 
     this._update();
+  }
+
+  _queueState() { return this._hass?.states[QUEUE_E]?.state || ''; }
+  _isRunActive() {
+    return this._queueState().startsWith('run:') || this._hass?.states['script.sprinkler']?.state === 'on';
+  }
+  _queuedZoneNums() {
+    const q = this._queueState();
+    if (!q.startsWith('run:')) return [];
+    return q.slice(4).split(',').map(x => parseInt(x)).filter(n => !isNaN(n));
   }
 
   _loadMdiIcons() {
@@ -185,42 +177,6 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _svc(domain, service, data) { this._hass.callService(domain, service, data); }
   _activeZones() { return this._cfg.zones.slice(0, this._cfg.active_zones); }
-
-  _checkResumeZones() {
-    // On first load, detect if any zones are running and check if they've exceeded their duration
-    // This prevents over-watering if HA was restarted mid-zone-run
-    const now = Date.now();
-    const resumed = [];
-    const overran = [];
-    
-    this._activeZones().forEach((z, i) => {
-      if (!z.sw) return;
-      const sw = this._hass.states[z.sw];
-      if (sw?.state !== 'on') return; // zone not running
-      
-      const lastChanged = new Date(sw.last_changed).getTime();
-      const elapsedMs = now - lastChanged;
-      const elapsedMin = elapsedMs / 60000;
-      const duration = parseFloat(this._hass.states[z.dur]?.state) || 10;
-      
-      if (elapsedMin >= duration) {
-        // zone has run past its duration — turn it off immediately
-        this._svc('switch', 'turn_off', {entity_id: z.sw});
-        overran.push(`${z.name} (${Math.round(elapsedMin)}m)`);
-      } else {
-        // zone is still within duration — let it finish naturally
-        resumed.push(`${z.name} (${Math.round(elapsedMin)}/${Math.round(duration)}m)`);
-      }
-    });
-    
-    if (resumed.length || overran.length) {
-      const msg = [
-        resumed.length ? `▶ Resumed: ${resumed.join(', ')}` : '',
-        overran.length ? `⏹ Stopped (overran): ${overran.join(', ')}` : ''
-      ].filter(Boolean).join(' — ');
-      console.log(`[SprinklerCard] Smart Resume: ${msg}`);
-    }
-  }
 
   _skipList() {
     const s = this._hass.states['input_text.sprinkler_skip_zones']?.state || '';
@@ -246,10 +202,7 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _saveConfig(patch) {
     for (const key of Object.keys(patch)) this._cfg[key] = patch[key];
-    if (patch.zones !== undefined) {
-      clearTimeout(this._scriptRebuildTimer);
-      this._scriptRebuildTimer = setTimeout(() => this._createSprinklerScript(), 1500);
-    }
+    this._scheduleEngineRebuild();
     // debounced websocket save — coalesces rapid changes into one write
     clearTimeout(this._saveDebounce);
     this._saveDebounce = setTimeout(() => {
@@ -261,185 +214,355 @@ class SprinklerDashCardV2 extends HTMLElement {
   _confirm(title, msg, okClass='confirm-btn--ok') {
     if (!this._cfg.confirm_actions) return Promise.resolve(true);
     const r = this.shadowRoot;
+    // settle any dialog that is still open, so its OK handler can never fire later
+    if (this._confirmResolve) { const prev = this._confirmResolve; this._confirmResolve = null; prev(false); }
     r.getElementById('confirm-title').textContent = title;
     r.getElementById('confirm-msg').textContent = msg;
     const okBtn = r.getElementById('confirm-ok');
     okBtn.className = 'confirm-btn ' + okClass;
     r.getElementById('confirm-modal').classList.add('confirm-modal--open');
     return new Promise(resolve => {
-      this._confirmResolve = resolve;
-      const onOk = () => {
-        r.getElementById('confirm-modal').classList.remove('confirm-modal--open');
+      const finish = (val) => {
         okBtn.removeEventListener('click', onOk);
-        resolve(true);
+        r.getElementById('confirm-modal').classList.remove('confirm-modal--open');
+        if (this._confirmResolve === finish) this._confirmResolve = null;
+        resolve(val);
       };
+      const onOk = () => finish(true);
       okBtn.addEventListener('click', onOk);
+      this._confirmResolve = finish;
     });
   }
 
+  _zoneSwitches() { return this._activeZones().map(z=>z.sw).filter(Boolean); }
+
+  _clearQueue() {
+    if (this._hass.states[QUEUE_E]) this._svc('input_text','set_value',{entity_id:QUEUE_E, value:''});
+  }
+
   _allOff() {
-    this._confirm('All Off', 'Turn off all zones immediately?', 'confirm-btn--danger').then(ok => {
+    this._confirm('All Off', 'Turn off all zones and cancel any running schedule?', 'confirm-btn--danger').then(ok => {
       if (!ok) return;
-      const switches = this._activeZones().map(z=>z.sw).filter(Boolean);
+      this._clearQueue();
+      const switches = this._zoneSwitches();
       if (switches.length) this._svc('switch','turn_off',{entity_id:switches});
-      this._activeZones().forEach((_,i)=>{ delete this._onTimes[i]; this._renderProgress(i,false,0,0); });
     });
   }
 
   _startSchedule() {
-    this._confirm('Start Schedule', 'Run all scheduled zones now?').then(ok => {
+    this._confirm('Start Schedule', 'Run all scheduled zones now?').then(async ok => {
       if (!ok) return;
-      // Clear any manual zone timers to prevent interference
-      if (this._manualZoneTimers) Object.values(this._manualZoneTimers).forEach(t => clearTimeout(t));
-      this._manualZoneTimers = {};
-      if (!this._hass.states['script.sprinkler']) {
-        this._createSprinklerScript().then(() => {
-          setTimeout(() => this._svc('script','turn_on',{entity_id:'script.sprinkler'}), 1000);
-        });
-      } else {
-        this._svc('script','turn_on',{entity_id:'script.sprinkler'});
-      }
+      if (!this._hass.states['script.sprinkler'] || !this._hass.states[QUEUE_E]) await this._ensureEngine(true);
+      this._svc('script','turn_on',{entity_id:'script.sprinkler'});
     });
+  }
+
+  // ── Engine ────────────────────────────────────────────────────────
+
+  // zones as the engine sees them: position-numbered, only zones with a switch
+  _engineZones() {
+    return this._activeZones().map((z,i)=>({
+      n: i+1, sw: z.sw||'', dur: z.dur||'', t: zoneTimer(i), name: z.name||('Zone '+(i+1)),
+      sched: z.schedule_enabled !== false,
+    })).filter(z => z.sw);
+  }
+
+  _jojoLevelEntity() {
+    if (this._cfg.jojo_level_sensor) return this._cfg.jojo_level_sensor;
+    const slot = (this._cfg.meta_slots||[]).find(s => (s.sensor2||'').includes('liquid_level'));
+    if (slot) return slot.sensor2;
+    const js = this._cfg.jojo_sensor;
+    if (js && this._hass?.states[js]?.attributes?.unit_of_measurement === '%') return js;
+    return '';
+  }
+
+  _engineSignature() {
+    const data = JSON.stringify({
+      v: ENGINE_VERSION,
+      z: this._engineZones().map(z=>[z.n,z.sw,z.dur,z.sched,z.name]),
+      r: this._cfg.rules||{}, rs: this._cfg.rain_sensor||'', rt: this._cfg.rain_threshold||5,
+      rh: this._cfg.rain_restore_hours||48, se: this._cfg.schedule_entity||'',
+      jl: this._jojoLevelEntity(), jp: this._cfg.jojo_low_pct||35,
+    });
+    let h = 5381;
+    for (let i = 0; i < data.length; i++) h = ((h << 5) + h + data.charCodeAt(i)) >>> 0;
+    return 'sdc-engine:' + ENGINE_VERSION + ':' + h.toString(16);
+  }
+
+  _scheduleEngineRebuild() {
+    clearTimeout(this._engineRebuildTimer);
+    this._engineRebuildTimer = setTimeout(() => this._ensureEngine(), 1500);
+  }
+
+  // Make sure helpers, script.sprinkler and the controller automation exist and
+  // match the current card config. Rebuilds only when the signature changed.
+  async _ensureEngine(force=false) {
+    if (!this._hass || this._engineBusy) return;
+    if (!this._hass.user?.is_admin) return; // config APIs are admin-only
+    this._engineBusy = true;
+    try {
+      const sig = this._engineSignature();
+      await this._ensureHelpers();
+      let current = null;
+      if (!force) {
+        try { current = await this._hass.callApi('GET', 'config/automation/config/' + CONTROLLER_ID); } catch(e) { current = null; }
+      }
+      const upToDate = current && String(current.description||'').includes(sig) && this._hass.states['script.sprinkler'];
+      if (!upToDate) {
+        await this._createSprinklerScript();
+        await this._hass.callApi('POST', 'config/automation/config/' + CONTROLLER_ID, this._buildController(sig));
+        console.log('[SprinklerCard] engine (re)built', sig);
+      }
+      this._ensureScheduler();
+    } catch(e) {
+      console.warn('[SprinklerCard] engine setup failed', e);
+    } finally {
+      this._engineBusy = false;
+    }
+  }
+
+  async _ensureHelpers() {
+    const ws = (m) => this._hass.connection.sendMessagePromise(m);
+    const st = this._hass.states;
+    const jobs = [];
+    const mkText = (name, icon) => ws({ type:'input_text/create', name, max:255, min:0, mode:'text', icon });
+    if (!st[SKIP_E]) jobs.push(mkText('Sprinkler Skip Zones', 'mdi:calendar-remove'));
+    if (!st[MANUAL_LOG_E]) jobs.push(mkText('Sprinkler Manual Log', 'mdi:water-pump'));
+    if (!st[QUEUE_E]) jobs.push(mkText('Sprinkler Queue', 'mdi:playlist-play'));
+    if (!st[RAIN_PAUSE_E]) jobs.push(mkText('Sprinkler Rain Pause', 'mdi:weather-pouring'));
+    this._engineZones().forEach(z => {
+      if (!st[z.t]) jobs.push(ws({ type:'timer/create', name:'Sprinkler Zone '+z.n, duration:'00:10:00', restore:true, icon:'mdi:sprinkler-variant' }));
+    });
+    const res = await Promise.allSettled(jobs);
+    res.filter(r=>r.status==='rejected').forEach(r=>console.warn('[SprinklerCard] helper create failed', r.reason));
+
+    // Helpers created by older versions had an "initial" value, which makes HA
+    // reset them on every restart (skip list and manual log were wiped). Strip it.
+    const ours = ['sprinkler_skip_zones','sprinkler_manual_log','sprinkler_queue','sprinkler_rain_pause'];
+    try {
+      const list = await ws({ type:'input_text/list' });
+      for (const it of (list||[])) {
+        if (!ours.includes(it.id) || it.initial === undefined) continue;
+        const { id, initial, ...rest } = it;
+        await ws({ type:'input_text/update', input_text_id:id, ...rest });
+        console.log('[SprinklerCard] removed initial value from input_text.'+id+' so it survives restarts');
+      }
+    } catch(e) { console.warn('[SprinklerCard] could not check input_text helpers', e); }
+    // Zone timers must restore after a restart
+    try {
+      const list = await ws({ type:'timer/list' });
+      for (const it of (list||[])) {
+        if (!/^sprinkler_zone_\d+$/.test(it.id) || it.restore === true) continue;
+        const { id, ...rest } = it;
+        await ws({ type:'timer/update', timer_id:id, ...rest, restore:true });
+      }
+    } catch(e) { console.warn('[SprinklerCard] could not check timers', e); }
   }
 
   _createSprinklerScript() {
-    // Build a sequential script from the active zones that are schedule-enabled
-    const zones = this._activeZones().filter(z => z.sw && z.schedule_enabled !== false);
-    if (!zones.length) return Promise.resolve();
-
-    const skipEntity = 'input_text.sprinkler_skip_zones';
-    const hasSkipHelper = !!this._hass.states[skipEntity];
-
-    const sequence = [];
-    zones.forEach(z => {
-      if (hasSkipHelper) {
-        // if this zone is in the skip list: remove it from the list (self-clearing) and don't water
-        // otherwise: run normally
-        sequence.push({
-          if: [{
-            condition: 'template',
-            value_template: `{{ '${z.sw}' in (states('${skipEntity}') | default('','')).split(',') }}`,
-          }],
-          then: [{
-            action: 'input_text.set_value',
-            target: { entity_id: skipEntity },
-            data: {
-              value: `{{ (states('${skipEntity}') | default('','')).split(',') | reject('eq','${z.sw}') | reject('eq','') | list | join(',') }}`,
-            },
-          }],
-          else: [
-            { action:'switch.turn_on', target:{ entity_id: z.sw } },
-            { delay: { minutes: `{{ states('${z.dur}') | float(0) | int or 1 }}` } },
-            { action:'switch.turn_off', target:{ entity_id: z.sw } },
-          ],
-        });
-      } else {
-        // skip helper not available yet — run normally
-        sequence.push({ action:'switch.turn_on', target:{ entity_id: z.sw } });
-        sequence.push({ delay: { minutes: `{{ states('${z.dur}') | float(0) | int or 1 }}` } });
-        sequence.push({ action:'switch.turn_off', target:{ entity_id: z.sw } });
-      }
-    });
-
+    // script.sprinkler only loads the run queue — the controller automation does
+    // the watering, so a restart mid-run resumes instead of dying with the script.
+    const nums = this._engineZones().filter(z => z.sched).map(z => z.n);
     return this._hass.callApi('POST', 'config/script/config/sprinkler', {
       alias: 'Sprinkler',
       icon: 'mdi:sprinkler-fire',
+      description: 'Auto-generated by Sprinkler Dash Card. Loads the run queue; automation.sprinkler_controller runs the zones.',
       mode: 'single',
-      sequence: sequence,
+      sequence: [
+        { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value: 'run:' + nums.join(',') } },
+        { event: ADVANCE_EVENT, event_data: { source: 'script' } },
+      ],
     }).catch(err => console.warn('sprinkler-dash-card: could not create script.sprinkler', err));
   }
 
-  _ensureSprinklerScript() {
-    if (this._scriptChecked) return;
-    this._scriptChecked = true;
-    const needsScript = !this._hass.states['script.sprinkler'];
-    const needsSched  = !Object.values(this._hass.states).some(s =>
+  _buildController(sig) {
+    const Z = this._engineZones();
+    const sws = Z.map(z => z.sw);
+    const rules = this._cfg.rules || {};
+    const sched = this._cfg.schedule_entity || '';
+    const rain = this._cfg.rain_sensor || '';
+    const thresh = parseFloat(this._cfg.rain_threshold) || 5;
+    const restoreH = parseFloat(this._cfg.rain_restore_hours) || 48;
+    const level = this._jojoLevelEntity();
+    const lowPct = parseFloat(this._cfg.jojo_low_pct) || 35;
+    const useRain = rules.rain_disable_schedule !== false && !!rain && !!sched;
+    const useRestore = useRain && rules.rain_auto_restore !== false;
+    const useJojo = rules.jojo_shutoff_zones !== false && !!level;
+
+    const zoneBy = (key, expr) => "{{ zones | selectattr('" + key + "','eq', " + expr + ") | first | default({}) }}";
+    const minsOf = "{{ ((states(z.dur) | int(0)) if z.dur else 10) }}";
+    const durTpl = "{{ '%02d:%02d:00' % ((mins | int) // 60, (mins | int) % 60) }}";
+    const cont = { continue_on_error: true };
+    const advance = { event: ADVANCE_EVENT, event_data: {} };
+    const tpl = (t) => ({ condition:'template', value_template: t });
+
+    const triggers = [
+      { trigger:'event', event_type: ADVANCE_EVENT, id:'advance' },
+      ...Z.map(z => ({ trigger:'event', event_type:'timer.finished', event_data:{ entity_id: z.t }, id:'timer_done' })),
+      { trigger:'state', entity_id: sws, from:'off', to:'on', id:'zone_on' },
+      { trigger:'state', entity_id: sws, from:'on', to:'off', id:'zone_off' },
+      { trigger:'homeassistant', event:'start', id:'ha_start' },
+      { trigger:'time_pattern', minutes:'/1', id:'watchdog' },
+    ];
+    if (useJojo) triggers.push({ trigger:'numeric_state', entity_id: level, below: lowPct, id:'jojo_low' });
+    if (useRain) {
+      triggers.push({ trigger:'numeric_state', entity_id: rain, above: thresh, id:'rain_high' });
+      triggers.push({ trigger:'state', entity_id: sched, from:'off', to:'on', id:'sched_on' });
+    }
+
+    const jojoAbort = useJojo ? [{
+      if: [ tpl("{{ states('" + level + "') | float(100) < " + lowPct + " }}") ],
+      then: [
+        { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value:'' } },
+        { action:'persistent_notification.create', data:{ title:'Sprinklers', notification_id:'sprinkler_jojo',
+          message: "Schedule run cancelled — tank level {{ states('" + level + "') }}% is below " + lowPct + "%." } },
+        { stop: 'tank low' },
+      ],
+    }] : [];
+
+    const branches = [
+      // ── advance: start the next queued zone once nothing is watering
+      { conditions:[{ condition:'trigger', id:'advance' }], sequence:[
+        { variables:{ q: "{{ states('" + QUEUE_E + "') }}" } },
+        tpl("{{ q.startswith('run:') }}"),
+        tpl("{{ zones | map(attribute='t') | select('is_state','active') | list | count == 0 }}"),
+        { variables:{ rest: "{{ q[4:].split(',') | reject('eq','') | list }}" } },
+        { if:[ tpl("{{ rest | count == 0 }}") ], then:[
+          { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value:'' } },
+          { stop:'run complete' },
+        ]},
+        { variables:{ z: zoneBy('n', "(rest[0] | int(0))"), remaining: "{{ 'run:' ~ (rest[1:] | join(',')) }}" } },
+        { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value: "{{ remaining }}" } },
+        ...jojoAbort,
+        { if:[ tpl("{{ not z.get('sw') }}") ], then:[ advance, { stop:'unknown zone' } ] },
+        { if:[ tpl("{{ z.sw in (states('" + SKIP_E + "') | default('')).split(',') }}") ], then:[
+          { action:'input_text.set_value', target:{ entity_id: SKIP_E },
+            data:{ value: "{{ (states('" + SKIP_E + "') | default('')).split(',') | reject('eq', z.sw) | reject('eq','') | join(',') }}" } },
+          advance, { stop:'skipped' },
+        ]},
+        { variables:{ mins: minsOf } },
+        { if:[ tpl("{{ mins | int(0) <= 0 }}") ], then:[ advance, { stop:'zero duration' } ] },
+        { action:'timer.start', target:{ entity_id: "{{ z.t }}" }, data:{ duration: durTpl }, ...cont },
+        { action:'switch.turn_on', target:{ entity_id: "{{ z.sw }}" }, ...cont },
+        { wait_template: "{{ is_state(z.sw, 'on') }}", timeout:'00:00:20', continue_on_timeout:true },
+        { if:[ tpl("{{ not is_state(z.sw, 'on') }}") ], then:[
+          { action:'switch.turn_on', target:{ entity_id: "{{ z.sw }}" }, ...cont },
+        ]},
+      ]},
+
+      // ── timer finished: close the valve (verify + retry), then continue the run
+      { conditions:[{ condition:'trigger', id:'timer_done' }], sequence:[
+        { variables:{ z: zoneBy('t', 'trigger.event.data.entity_id') } },
+        tpl("{{ z.get('sw','') != '' }}"),
+        { action:'switch.turn_off', target:{ entity_id: "{{ z.sw }}" }, ...cont },
+        { repeat:{
+          sequence:[
+            { wait_template: "{{ not is_state(z.sw, 'on') }}", timeout:'00:00:15', continue_on_timeout:true },
+            { if:[ tpl("{{ is_state(z.sw, 'on') }}") ], then:[
+              { action:'switch.turn_off', target:{ entity_id: "{{ z.sw }}" }, ...cont },
+            ]},
+          ],
+          until:[ tpl("{{ not is_state(z.sw, 'on') or repeat.index >= 3 }}") ],
+        }},
+        { if:[ tpl("{{ is_state(z.sw, 'on') }}") ], then:[
+          { action:'persistent_notification.create', data:{ title:'Sprinklers', notification_id:'sprinkler_stuck',
+            message:"{{ z.name }} did not turn off after 3 attempts — check the valve." } },
+        ]},
+        advance,
+      ]},
+
+      // ── any zone turned on (card toggle, eWeLink app, another automation): arm its timer
+      { conditions:[{ condition:'trigger', id:'zone_on' }], sequence:[
+        { variables:{ z: zoneBy('sw', 'trigger.entity_id') } },
+        tpl("{{ z.get('t','') != '' and not is_state(z.t, 'active') }}"),
+        { variables:{ mins: "{{ [ ((states(z.dur) | int(0)) if z.dur else 10), 1 ] | max }}" } },
+        { action:'timer.start', target:{ entity_id: "{{ z.t }}" }, data:{ duration: durTpl }, ...cont },
+      ]},
+
+      // ── zone turned off early: drop its timer, let the run continue
+      { conditions:[{ condition:'trigger', id:'zone_off' }], sequence:[
+        { variables:{ z: zoneBy('sw', 'trigger.entity_id') } },
+        { if:[ tpl("{{ z.get('t','') != '' and states(z.t) in ['active','paused'] }}") ], then:[
+          { action:'timer.cancel', target:{ entity_id: "{{ z.t }}" }, ...cont },
+        ]},
+        advance,
+      ]},
+
+      // ── HA restarted: timers restore themselves; close any valve whose timer
+      //    already ran out while HA was down, then resume the queued run
+      { conditions:[{ condition:'trigger', id:'ha_start' }], sequence:[
+        { delay:'00:01:00' },
+        { repeat:{ for_each: "{{ zones }}", sequence:[
+          { if:[ tpl("{{ is_state(repeat.item.sw, 'on') and not is_state(repeat.item.t, 'active') }}") ], then:[
+            { action:'switch.turn_off', target:{ entity_id: "{{ repeat.item.sw }}" }, ...cont },
+          ]},
+        ]}},
+        advance,
+      ]},
+
+      // ── every minute: safety net + rain auto-restore
+      { conditions:[{ condition:'trigger', id:'watchdog' }], sequence:[
+        { repeat:{ for_each: "{{ zones }}", sequence:[
+          { if:[ tpl("{{ is_state(repeat.item.sw, 'on') and is_state(repeat.item.t, 'idle') and (as_timestamp(now()) - as_timestamp((expand(repeat.item.sw) | first).last_changed)) > 120 }}") ], then:[
+            { variables:{ z: "{{ repeat.item }}" } },
+            { variables:{ mins: "{{ [ ((states(z.dur) | int(0)) if z.dur else 10), 1 ] | max }}" } },
+            { action:'timer.start', target:{ entity_id: "{{ z.t }}" }, data:{ duration: durTpl }, ...cont },
+          ]},
+        ]}},
+        ...(useRestore ? [{ if:[ tpl(
+          "{{ states('" + RAIN_PAUSE_E + "') not in ['', 'unknown', 'unavailable'] and is_state('" + sched + "', 'off')" +
+          " and states('" + rain + "') | float(0) < " + thresh +
+          " and (as_timestamp(now()) - as_timestamp(states('" + RAIN_PAUSE_E + "'), as_timestamp(now()))) >= " + Math.round(restoreH * 3600) + " }}"
+        ) ], then:[
+          { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value:'' } },
+          { action:'switch.turn_on', target:{ entity_id: sched } },
+        ]}] : []),
+      ]},
+    ];
+
+    if (useJojo) branches.push({ conditions:[{ condition:'trigger', id:'jojo_low' }], sequence:[
+      { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value:'' } },
+      { action:'switch.turn_off', target:{ entity_id: sws }, ...cont },
+      { action:'persistent_notification.create', data:{ title:'Sprinklers', notification_id:'sprinkler_jojo',
+        message: "Tank level {{ states('" + level + "') }}% dropped below " + lowPct + "% — all zones switched off." } },
+    ]});
+    if (useRain) {
+      branches.push({ conditions:[{ condition:'trigger', id:'rain_high' }], sequence:[
+        { if:[ { condition:'state', entity_id: sched, state:'on' } ], then:[
+          { action:'switch.turn_off', target:{ entity_id: sched } },
+          { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value: "{{ now().isoformat() }}" } },
+        ], else:[
+          // more rain while already paused: restart the countdown
+          { if:[ tpl("{{ states('" + RAIN_PAUSE_E + "') not in ['', 'unknown', 'unavailable'] }}") ], then:[
+            { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value: "{{ now().isoformat() }}" } },
+          ]},
+        ]},
+      ]});
+      // schedule switched on by hand (or by the restore) — no pending rain pause
+      branches.push({ conditions:[{ condition:'trigger', id:'sched_on' }], sequence:[
+        { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value:'' } },
+      ]});
+    }
+
+    return {
+      alias: 'Sprinkler Controller',
+      description: 'Auto-generated by Sprinkler Dash Card — edits are overwritten when the card config changes. Runs the zone queue, auto-stops every zone, survives restarts. [' + sig + ']',
+      mode: 'queued',
+      max: 50,
+      max_exceeded: 'silent',
+      variables: { zones: Z.map(z => ({ n:z.n, sw:z.sw, dur:z.dur, t:z.t, name:z.name })) },
+      triggers,
+      conditions: [],
+      actions: [{ choose: branches }],
+    };
+  }
+
+  _ensureScheduler() {
+    const hasSched = Object.values(this._hass.states).some(s =>
       s.entity_id.startsWith('switch.schedule_') &&
       (s.attributes.entities||[]).includes('script.sprinkler')
     );
-    const needsSkipHelper = !this._hass.states['input_text.sprinkler_skip_zones'];
-    const needsManualLogHelper = !this._hass.states['input_text.sprinkler_manual_log'];
-
-    const afterHelper = (helperJustCreated) => {
-      if (needsScript || helperJustCreated) {
-        this._createSprinklerScript().then(() => {
-          if (needsSched) setTimeout(() => this._createSchedulerEntity(), 1200);
-        });
-      } else if (needsSched) {
-        this._createSchedulerEntity();
-      }
-    };
-
-    if (needsSkipHelper || needsManualLogHelper) {
-      const creates = [];
-      if (needsSkipHelper) creates.push(this._createSkipHelper());
-      if (needsManualLogHelper) creates.push(this._createManualLogHelper());
-      Promise.all(creates).then(() => setTimeout(()=>afterHelper(true), 1000)).catch(() => setTimeout(()=>afterHelper(false), 1000));
-    } else {
-      afterHelper(false);
-    }
-  }
-
-  // Last Run now reads from scheduler's last_triggered attribute — helper no longer needed
-  // async _createLastRunHelper() {
-  //   try {
-  //     await this._hass.connection.sendMessagePromise({
-  //       type: 'input_text/create',
-  //       name: 'Sprinkler Last Run',
-  //       max: 255, min: 0, mode: 'text', initial: '',
-  //       icon: 'mdi:history',
-  //     });
-  //     console.log('[SprinklerCard] created input_text.sprinkler_last_run');
-  //   } catch(e) {
-  //     console.warn('[SprinklerCard] could not auto-create last run helper', e);
-  //   }
-  // }
-
-  // History helper creation disabled — using simpler approach
-  // async _createHistoryHelper() {
-  //   try {
-  //     await this._hass.connection.sendMessagePromise({
-  //       type: 'input_text/create',
-  //       name: 'Sprinkler Run History',
-  //       max: 255, min: 0, mode: 'text', initial: '{}',
-  //       icon: 'mdi:history',
-  //     });
-  //     console.log('[SprinklerCard] created input_text.sprinkler_run_history');
-  //   } catch(e) {
-  //     console.warn('[SprinklerCard] could not auto-create run history helper', e);
-  //   }
-  // }
-
-  async _createManualLogHelper() {
-    try {
-      await this._hass.connection.sendMessagePromise({
-        type: 'input_text/create',
-        name: 'Sprinkler Manual Log',
-        max: 255, min: 0, mode: 'text', initial: '{}',
-        icon: 'mdi:water-pump',
-      });
-      console.log('[SprinklerCard] created input_text.sprinkler_manual_log');
-    } catch(e) {
-      console.warn('[SprinklerCard] could not auto-create manual log helper', e);
-    }
-  }
-
-  async _createSkipHelper() {
-    // create input_text.sprinkler_skip_zones via the direct websocket helper-creation command
-    try {
-      await this._hass.connection.sendMessagePromise({
-        type: 'input_text/create',
-        name: 'Sprinkler Skip Zones',
-        max: 255,
-        min: 0,
-        mode: 'text',
-        initial: '',
-        icon: 'mdi:calendar-remove',
-      });
-      console.log('[SprinklerCard] created input_text.sprinkler_skip_zones');
-    } catch(e) {
-      console.warn('[SprinklerCard] could not auto-create skip helper — per-zone skip will be unavailable until input_text.sprinkler_skip_zones exists', e);
-    }
+    if (!hasSched && this._hass.services?.scheduler?.add) this._createSchedulerEntity();
   }
 
   _createSchedulerEntity() {
@@ -754,7 +877,10 @@ class SprinklerDashCardV2 extends HTMLElement {
         </ul>
 
         <h4>Step 3 — Install Scheduler integration</h4>
-        <p>Install <b>Scheduler Component</b> via HACS (Integration category). That's all — the card automatically creates both <code>script.sprinkler</code> and the scheduler entity on first load. The scheduler defaults to Mon/Wed/Fri at 06:00 — adjust the days and time using the Schedule section on the card.</p>
+        <p>Install <b>Scheduler Component</b> via HACS (Integration category). That's all — on first load (as an admin user) the card creates <code>script.sprinkler</code>, the scheduler entity, one <code>timer.sprinkler_zone_N</code> per zone, and <code>automation.sprinkler_controller</code>. The scheduler defaults to Mon/Wed/Fri at 06:00 — adjust the days and time using the Schedule section on the card.</p>
+
+        <h4>How watering is controlled</h4>
+        <p>All timing runs inside Home Assistant, not in the browser. Every zone gets a restoring HA timer: whenever a zone turns on — from the schedule, Manual Run, the zone toggle, the eWeLink app or another automation — the controller automation arms its timer and closes the valve when it runs out. Scheduled runs are kept in <code>input_text.sprinkler_queue</code>, so if HA restarts mid-run the current zone finishes on time and the remaining zones continue. Closing the dashboard never leaves a zone running.</p>
 
         <h4>Step 4 — Configure zones in ⚙️</h4>
         <p>Tap the gear icon → <b>Active Zones</b> to set how many zones to show. For each zone set the <b>Switch Entity</b> (your valve switch) and <b>Duration Entity</b> (the input_number from Step 2). Use the search field to find entities. Drag <b>⠿</b> to reorder. Tick the checkbox to include a zone in the schedule.</p>
@@ -940,7 +1066,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const skip=document.createElement('div'); skip.className='zskip'; skip.id='zskip-'+i;
       skip.title='Skip next scheduled run';
       const skipIcon=document.createElement('ha-icon'); skipIcon.setAttribute('icon','mdi:calendar-remove'); skip.appendChild(skipIcon);
-      const tog=document.createElement('div'); tog.className='ztoggle'; tog.id='ztog-'+i;
+      const tog=document.createElement('div'); tog.className='ztoggle'; tog.id='ztog-'+i; tog.title='On/off — auto-stops after the zone duration';
       tog.appendChild(Object.assign(document.createElement('div'),{className:'ztoggle-thumb'}));
       top.append(seq,name,skip,tog);
       const pt=document.createElement('div'); pt.className='zprog-track';
@@ -980,7 +1106,7 @@ class SprinklerDashCardV2 extends HTMLElement {
           if (ok) this._svc('switch', action, {entity_id:z.sw});
         });
       });
-      const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); if(this._onTimes[i])this._onTimes[i].totalSecs=val*60; };
+      const applyDur=(val)=>{ val=Math.min(60,Math.max(0,val)); di.value=val; if(z.dur)this._svc('input_number','set_value',{entity_id:z.dur,value:val}); };
       di.addEventListener('change',()=>applyDur(parseFloat(di.value)||0));
       bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-1));
       bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+1));
@@ -1378,7 +1504,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       {
         key:'jojo_shutoff_zones',
         title:'Jojo: Low-level zone shutoff',
-        desc:`If tank level drops below ${this._cfg.jojo_low_pct||35}%, all running zones are immediately switched off. Jojo info bar turns red.`,
+        desc:`If tank level drops below ${this._cfg.jojo_low_pct||35}%, all running zones are switched off and scheduled runs are cancelled. Runs in HA even with no dashboard open.`,
       },
     ];
     // confirm actions toggle (stored at top level, not inside rules)
@@ -1438,6 +1564,8 @@ class SprinklerDashCardV2 extends HTMLElement {
 
     // update rule descriptions to reflect current values
     this._updateRuleDescriptions();
+    // thresholds / zone names feed the server-side controller
+    this._scheduleEngineRebuild();
 
     // save directly via HA websocket — bypasses sections layout config-changed limitation
     const configToSave = JSON.parse(JSON.stringify(this._cfg));
@@ -1473,7 +1601,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       },
       {
         key:'jojo_shutoff_zones',
-        desc:`If tank level drops below ${this._cfg.jojo_low_pct||35}%, all running zones are immediately switched off. Jojo info bar turns red.`
+        desc:`If tank level drops below ${this._cfg.jojo_low_pct||35}%, all running zones are switched off and scheduled runs are cancelled. Runs in HA even with no dashboard open.`
       }
     ];
     
@@ -1533,289 +1661,256 @@ class SprinklerDashCardV2 extends HTMLElement {
   _stopSchedule() {
     this._confirm('Stop Schedule', 'Stop the running schedule and close all valves?', 'confirm-btn--danger').then(ok => {
       if (!ok) return;
+      // clear the queue first so closing the valves does not advance to the next zone
+      this._clearQueue();
       this._svc('script', 'turn_off', {entity_id: 'script.sprinkler'});
-      const allSwitches = this._activeZones().map(z=>z.sw).filter(Boolean);
+      const allSwitches = this._zoneSwitches();
       if (allSwitches.length) this._svc('switch', 'turn_off', {entity_id: allSwitches});
-      this._activeZones().forEach((_,i)=>{ delete this._onTimes[i]; this._renderProgress(i,false,0,0,false); });
     });
   }
 
   _showZoneDetails(idx, z) {
-    const r = this.shadowRoot;
     const modal = document.createElement('div');
     modal.className = 'zone-detail-modal zone-detail-modal--open';
     modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:10000';
-    
+
     const content = document.createElement('div');
     content.style.cssText = 'background:#222;border-radius:12px;padding:20px;max-width:450px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.8);color:#fff;font-family:system-ui,-apple-system,sans-serif';
-    
+
     const title = document.createElement('h2');
     title.style.cssText = 'margin:0 0 15px 0;font-size:22px;color:#4dc49a;text-align:center';
     title.textContent = z.name;
-    
+
     const sw = this._hass.states[z.sw];
     const isOn = sw?.state === 'on';
-    const originalDur = z.dur ? parseFloat(this._hass.states[z.dur]?.state || 10) : 10;
-    let currentDur = originalDur;
-    
+    const scheduledDur = z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state || 10)) : 10;
+    let currentDur = Math.max(1, scheduledDur);
+
     const status = document.createElement('div');
     status.style.cssText = 'font-size:13px;margin-bottom:12px;padding:10px;background:rgba(77,196,154,0.1);border-radius:6px;text-align:center';
-    status.innerHTML = `<strong>Status:</strong> ${isOn ? '🟢 ON' : '⚪ OFF'}`;
-    
-    // Duration adjustment with big buttons
+    let statusTxt = isOn ? '🟢 ON' : (sw?.state === 'unavailable' ? '⚠️ UNAVAILABLE' : '⚪ OFF');
+    const tLeft = this._timerRemaining(idx);
+    if (isOn && tLeft !== null) statusTxt += ' · auto-off in ' + Math.floor(tLeft/60) + 'm ' + String(Math.round(tLeft%60)).padStart(2,'0') + 's';
+    status.innerHTML = '<strong>Status:</strong> ' + statusTxt;
+
+    // Duration for THIS manual run only — the scheduled duration helper is not touched
     const durSection = document.createElement('div');
     durSection.style.cssText = 'margin:15px 0;padding:15px;background:rgba(77,196,154,0.08);border-radius:8px;text-align:center';
-    
+
     const durLabel = document.createElement('div');
     durLabel.style.cssText = 'font-size:12px;color:var(--secondary-text-color,#999);margin-bottom:10px;text-transform:uppercase;font-weight:600;letter-spacing:1px';
-    durLabel.textContent = 'Duration';
-    
+    durLabel.textContent = 'Manual run duration';
+
     const durDisplay = document.createElement('div');
     durDisplay.style.cssText = 'font-size:42px;font-weight:700;color:#4dc49a;margin:10px 0;font-family:monospace';
     durDisplay.textContent = currentDur;
-    
+
     const durUnit = document.createElement('div');
     durUnit.style.cssText = 'font-size:14px;color:var(--secondary-text-color,#999);margin-bottom:12px';
-    durUnit.textContent = 'minutes';
-    
+    durUnit.textContent = 'minutes (scheduled: ' + scheduledDur + ')';
+
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:12px;justify-content:center';
-    
+
     const minusBtn = document.createElement('button');
     minusBtn.style.cssText = 'width:50px;height:50px;border-radius:8px;border:none;background:#c23030;color:#fff;font-size:28px;font-weight:bold;cursor:pointer;transition:background 0.2s';
     minusBtn.textContent = '−';
-    minusBtn.addEventListener('mouseover', () => minusBtn.style.background = '#e53935');
-    minusBtn.addEventListener('mouseout', () => minusBtn.style.background = '#c23030');
-    minusBtn.addEventListener('click', () => {
-      currentDur = Math.max(1, currentDur - 1);
-      durDisplay.textContent = currentDur;
-      if (z.dur) this._svc('input_number','set_value',{entity_id:z.dur,value:currentDur});
-    });
-    
+    minusBtn.addEventListener('click', () => { currentDur = Math.max(1, currentDur - 1); durDisplay.textContent = currentDur; });
+
     const plusBtn = document.createElement('button');
     plusBtn.style.cssText = 'width:50px;height:50px;border-radius:8px;border:none;background:#4dc49a;color:#1a1a1a;font-size:28px;font-weight:bold;cursor:pointer;transition:background 0.2s';
     plusBtn.textContent = '+';
-    plusBtn.addEventListener('mouseover', () => plusBtn.style.background = '#5dd5ac');
-    plusBtn.addEventListener('mouseout', () => plusBtn.style.background = '#4dc49a');
-    plusBtn.addEventListener('click', () => {
-      currentDur = Math.min(60, currentDur + 1);
-      durDisplay.textContent = currentDur;
-      if (z.dur) this._svc('input_number','set_value',{entity_id:z.dur,value:currentDur});
-    });
-    
+    plusBtn.addEventListener('click', () => { currentDur = Math.min(60, currentDur + 1); durDisplay.textContent = currentDur; });
+
     btnRow.append(minusBtn, plusBtn);
     durSection.append(durLabel, durDisplay, durUnit, btnRow);
-    
+
     const lastRun = document.createElement('div');
     lastRun.style.cssText = 'font-size:12px;margin-bottom:15px;padding:10px;background:rgba(77,196,154,0.1);border-radius:6px';
-    const lastChanged = sw?.last_changed ? new Date(sw.last_changed).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : 'unknown';
-    lastRun.innerHTML = `<strong>Last Activity:</strong> ${lastChanged}`;
-    
+    const lastChanged = sw?.last_changed ? new Date(sw.last_changed).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) : 'unknown';
+    lastRun.innerHTML = '<strong>Last Activity:</strong> ' + lastChanged;
+
     const buttons = document.createElement('div');
     buttons.style.cssText = 'display:flex;gap:10px;margin-top:15px';
-    
+
     const closeBtn = document.createElement('button');
     closeBtn.style.cssText = 'flex:1;padding:10px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;border-radius:6px;cursor:pointer;font-weight:600;font-size:14px';
     closeBtn.textContent = 'Close';
     closeBtn.addEventListener('click', () => modal.remove());
-    
+
     const toggleBtn = document.createElement('button');
     toggleBtn.style.cssText = 'flex:1;padding:10px;background:'+(isOn ? '#c23030' : '#4dc49a')+';border:none;color:'+(isOn ? '#fff' : '#1a1a1a')+';border-radius:6px;cursor:pointer;font-weight:700;font-size:14px';
     toggleBtn.textContent = isOn ? 'Turn Off' : 'Manual Run';
     toggleBtn.addEventListener('click', () => {
-      if (z.sw) {
-        if (isOn) {
-          this._svc('switch', 'turn_off', {entity_id: z.sw});
-        } else {
-          // Start manual run with auto-stop
-          this._manualZoneRun(idx, z, currentDur, originalDur);
-        }
-        modal.remove();
-      }
+      if (!z.sw) return;
+      if (isOn) this._svc('switch', 'turn_off', {entity_id: z.sw});
+      else this._manualZoneRun(idx, z, currentDur);
+      modal.remove();
     });
-    
+    if (isOn) durSection.style.display = 'none';
+
     buttons.append(closeBtn, toggleBtn);
     content.append(title, status, durSection, lastRun, buttons);
     modal.append(content);
-    
-    modal.addEventListener('click', (ev) => {
-      if (ev.target === modal) modal.remove();
-    });
-    
+    modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); });
     document.body.appendChild(modal);
   }
-  
+
+  // seconds left on a zone's server-side timer, or null if it is not running
+  _timerRemaining(idx) {
+    const t = this._hass?.states[zoneTimer(idx)];
+    if (!t || t.state !== 'active' || !t.attributes?.finishes_at) return null;
+    return Math.max(0, (new Date(t.attributes.finishes_at).getTime() - Date.now()) / 1000);
+  }
+
+  // Manual log: newest-first array of {z:name, d:minutes, t:epoch-seconds}, trimmed to fit 255 chars
   _persistManualLog() {
-    const e = 'input_text.sprinkler_manual_log';
-    if (!this._hass.states[e]) return;
-    try {
-      const data = JSON.stringify(this._manualRunLog).substring(0, 255);
-      this._svc('input_text', 'set_value', {entity_id: e, value: data});
-    } catch(err) {
-      console.warn('[SprinklerCard] could not persist manual log', err);
-    }
+    if (!this._hass.states[MANUAL_LOG_E]) return;
+    const log = this._manualRunLog.slice(0, 6);
+    let data = JSON.stringify(log);
+    while (data.length > 255 && log.length) { log.pop(); data = JSON.stringify(log); }
+    this._svc('input_text', 'set_value', {entity_id: MANUAL_LOG_E, value: data});
   }
 
   _loadManualLog() {
-    const e = 'input_text.sprinkler_manual_log';
-    const state = this._hass.states[e];
-    if (!state || !state.state || state.state === '{}') return;
+    const raw = this._hass?.states[MANUAL_LOG_E]?.state;
+    if (!raw || raw === 'unknown' || raw === 'unavailable') return;
     try {
-      const loaded = JSON.parse(state.state);
-      this._manualRunLog = {...this._manualRunLog, ...loaded};
-    } catch(err) {
-      // ignore malformed data
-    }
-  }
-
-  _manualZoneRun(idx, z, runDuration, originalDuration) {
-    if (!z.sw) return;
-    
-    // Turn on the zone
-    this._svc('switch', 'turn_on', {entity_id: z.sw});
-    
-    // Store manual run data for Last Run display (in-memory + persisted)
-    if (!this._manualRunLog) this._manualRunLog = {};
-    this._manualRunLog[z.sw] = {
-      zone: z.name,
-      duration: runDuration,
-      timestamp: new Date().toISOString()
-    };
-    this._persistManualLog();
-    
-    // Clear any existing timer for this zone
-    if (this._manualZoneTimers?.[idx]) clearTimeout(this._manualZoneTimers[idx]);
-    if (!this._manualZoneTimers) this._manualZoneTimers = {};
-    
-    // Set timer to auto-stop after runDuration minutes
-    const timerMs = runDuration * 60 * 1000;
-    this._manualZoneTimers[idx] = setTimeout(() => {
-      // Turn off the zone
-      this._svc('switch', 'turn_off', {entity_id: z.sw});
-      
-      // Restore original duration
-      if (z.dur && originalDuration !== runDuration) {
-        this._svc('input_number','set_value',{entity_id:z.dur,value:originalDuration});
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) this._manualRunLog = parsed.filter(e => e && e.z);
+      else if (parsed && typeof parsed === 'object') {
+        // pre-3.0 format: { "switch.x": {zone, duration, timestamp} }
+        this._manualRunLog = Object.values(parsed).filter(e => e && e.zone)
+          .map(e => ({ z: e.zone, d: e.duration, t: Math.round(new Date(e.timestamp).getTime()/1000) }))
+          .sort((a,b) => b.t - a.t);
       }
-      
-      // Clear timer
-      delete this._manualZoneTimers[idx];
-      
-      console.log('[SprinklerCard] Manual run for '+z.name+' finished, duration reset to '+originalDuration+'min');
-    }, timerMs);
-    
-    console.log('[SprinklerCard] Manual run started: '+z.name+' for '+runDuration+'min (will auto-stop)');
+    } catch(err) { /* ignore malformed data */ }
   }
 
-  // Run history logging disabled
-  // _logRunToHistory() { ... }
+  // Timer first, then the valve: the controller sees an active timer and keeps
+  // this custom duration. The timer lives in HA, so closing the browser, changing
+  // views or restarting HA no longer leaves the zone running.
+  async _manualZoneRun(idx, z, mins) {
+    if (!z.sw) return;
+    mins = Math.max(1, Math.min(60, Math.round(mins)));
+    const t = zoneTimer(idx);
+    try {
+      if (this._hass.states[t]) await this._hass.callService('timer', 'start', { entity_id: t, duration: hhmm00(mins) });
+      else console.warn('[SprinklerCard] '+t+' missing — zone will use its scheduled duration');
+      await this._hass.callService('switch', 'turn_on', { entity_id: z.sw });
+    } catch(e) {
+      console.error('[SprinklerCard] manual run failed', e);
+      return;
+    }
+    this._manualRunLog = [{ z: z.name, d: mins, t: Math.round(Date.now()/1000) }, ...this._manualRunLog.filter(e => e.z !== z.name)];
+    this._persistManualLog();
+    console.log('[SprinklerCard] Manual run started: '+z.name+' for '+mins+'min (auto-off handled by HA timer '+t+')');
+  }
 
-  _showLastRun() {
+  // total seconds each switch was "on" between start and end, from HA history
+  async _onSeconds(entityIds, startMs, endMs) {
+    const out = {};
+    const hist = await this._hass.callWS({
+      type: 'history/history_during_period',
+      start_time: new Date(startMs).toISOString(),
+      end_time: new Date(endMs).toISOString(),
+      entity_ids: entityIds,
+      minimal_response: true, no_attributes: true, significant_changes_only: false,
+    });
+    for (const id of entityIds) {
+      const rows = hist?.[id] || [];
+      let secs = 0, onSince = null;
+      rows.forEach(r => {
+        const ts = ((r.lc ?? r.lu) || 0) * 1000;
+        const at = Math.max(ts, startMs);
+        if (r.s === 'on') { if (onSince === null) onSince = at; }
+        else if (onSince !== null) { secs += (at - onSince) / 1000; onSince = null; }
+      });
+      if (onSince !== null) secs += (endMs - onSince) / 1000;
+      out[id] = secs;
+    }
+    return out;
+  }
+
+  async _showLastRun() {
     const r = this.shadowRoot;
     const body = r.getElementById('lastrun-body');
-    
-    // Get last triggered time
-    const scriptE = 'script.sprinkler';
-    const scriptState = this._hass.states[scriptE];
-    const lastTriggered = scriptState?.attributes?.last_triggered;
-    
-    if (!lastTriggered) {
-      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">⏳ No scheduled run found. Run the schedule to populate this view.</p>';
-      r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
-      return;
-    }
-    
-    // Show timestamp
-    const ts = new Date(lastTriggered).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
-    let html = `<div class="lastrun-ts">📅 ${ts}</div>`;
-    
-    // Only show zones whose switch actually changed state near this run's start time.
-    // This avoids listing zones that are "configured" but didn't actually water
-    // (e.g. toggled off, skipped that day, or the config changed since).
-    const allZones = this._activeZones().filter(z => z.sw);
-    const skipList = this._skipList();
-    const runStart = new Date(lastTriggered).getTime();
-    const windowStart = runStart - (2 * 60 * 1000); // 2 min buffer before
-    const windowEnd = runStart + (4 * 60 * 60 * 1000); // up to 4h after (covers long sequential runs)
-    
-    if (allZones.length === 0) {
-      html += '<p style="color:var(--secondary-text-color,#666);margin-top:10px">No zones configured.</p>';
-      body.innerHTML = html;
-      r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
-      return;
-    }
-    
-    const ran = [];
-    const notRun = [];
-    allZones.forEach(z => {
-      const sw = this._hass.states[z.sw];
-      const lastChanged = sw?.last_changed ? new Date(sw.last_changed).getTime() : 0;
-      const actuallyRan = lastChanged >= windowStart && lastChanged <= windowEnd;
-      if (actuallyRan) ran.push(z); else notRun.push(z);
-    });
-    const skipped = notRun.filter(z => skipList.includes(z.sw));
-    const missing = notRun.filter(z => !skipList.includes(z.sw));
-    
-    // Show zones that actually ran
-    if (ran.length > 0) {
-      html += `<div class="lastrun-section-lbl">Watered (${ran.length})</div>`;
-      ran.forEach(z => {
-        let dur = '—';
-        if (z.dur && this._hass.states[z.dur]) {
-          const durVal = parseFloat(this._hass.states[z.dur].state || 10);
-          dur = durVal + 'm';
-        }
-        html += `<div class="lastrun-row">
-          <span class="lastrun-zone">💧 ${z.name}</span>
-          <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${dur}</span>
-        </div>`;
-      });
-    } else {
-      html += '<p style="color:var(--secondary-text-color,#666);margin-top:4px">No zones matched this run\'s time window.</p>';
-    }
-    
-    // Show explicitly skipped zones
-    if (skipped.length > 0) {
-      html += `<div class="lastrun-section-lbl" style="margin-top:10px">Skipped (${skipped.length})</div>`;
-      skipped.forEach(z => {
-        html += `<div class="lastrun-row">
-          <span class="lastrun-skipped">⏭ ${z.name}</span>
-          <span class="lastrun-dur">—</span>
-        </div>`;
-      });
-    }
-    
-    // Show zones that are configured/enabled but show no activity near this run
-    // (e.g. haven't run in a while, toggled off individually, etc.)
-    if (missing.length > 0) {
-      html += `<div class="lastrun-section-lbl" style="margin-top:10px">No recent activity (${missing.length})</div>`;
-      missing.forEach(z => {
-        const sw = this._hass.states[z.sw];
-        const lastAgo = sw?.last_changed ? this._formatTimeAgo(new Date(sw.last_changed)) : 'never';
-        html += `<div class="lastrun-row">
-          <span class="lastrun-skipped">⚪ ${z.name}</span>
-          <span class="lastrun-dur" style="font-size:11px">${lastAgo}</span>
-        </div>`;
-      });
-    }
-    
-    // Show recent manual runs
-    if (this._manualRunLog && Object.keys(this._manualRunLog).length > 0) {
-      html += `<div class="lastrun-section-lbl" style="margin-top:12px;opacity:0.8;font-size:11px">MANUAL RUNS</div>`;
-      Object.entries(this._manualRunLog).forEach(([swEntity, data]) => {
-        const timeAgo = this._formatTimeAgo(new Date(data.timestamp));
-        html += `<div class="lastrun-row">
-          <span class="lastrun-zone">🔧 ${data.zone}</span>
-          <span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">${data.duration}m • ${timeAgo}</span>
-        </div>`;
-      });
-    }
-    
-    body.innerHTML = html;
     r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
+
+    const lastTriggered = this._hass.states['script.sprinkler']?.attributes?.last_triggered;
+    const allZones = this._activeZones().filter(z => z.sw);
+    const fmtDur = (s) => { s = Math.round(s); const m = Math.floor(s/60), sec = s%60; return m + 'm' + (sec ? ' ' + String(sec).padStart(2,'0') + 's' : ''); };
+
+    let html = '';
+    if (!lastTriggered) {
+      html += '<p style="color:var(--secondary-text-color,#666)">⏳ No scheduled run found. Run the schedule to populate this view.</p>';
+    } else if (!allZones.length) {
+      html += '<p style="color:var(--secondary-text-color,#666);margin-top:10px">No zones configured.</p>';
+    } else {
+      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Loading run history…</p>';
+      const runStart = new Date(lastTriggered).getTime();
+      const windowStart = runStart - 2*60*1000;
+      const windowEnd = Math.min(Date.now(), runStart + 6*60*60*1000);
+      const ts = new Date(lastTriggered).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});
+      html += '<div class="lastrun-ts">📅 ' + ts + (this._isRunActive() ? ' · <span style="color:#4dc49a">in progress</span>' : '') + '</div>';
+
+      let onSecs = null;
+      try { onSecs = await this._onSeconds(allZones.map(z=>z.sw), windowStart, windowEnd); }
+      catch(e) { console.warn('[SprinklerCard] history lookup failed', e); }
+
+      const queued = this._queuedZoneNums();
+      const skipList = this._skipList();
+      const ran = [], waiting = [], skipped = [], missing = [];
+      allZones.forEach(z => {
+        const idx = this._activeZones().indexOf(z);
+        const secs = onSecs ? (onSecs[z.sw] || 0) : null;
+        if (secs !== null && secs >= 20) ran.push({ z, secs });
+        else if (queued.includes(idx+1)) waiting.push(z);
+        else if (skipList.includes(z.sw) || z.schedule_enabled === false) skipped.push(z);
+        else missing.push(z);
+      });
+
+      if (onSecs === null) html += '<p style="color:#ffb43c">Could not read history from Home Assistant.</p>';
+      if (ran.length) {
+        html += '<div class="lastrun-section-lbl">Watered (' + ran.length + ')</div>';
+        ran.forEach(({z, secs}) => {
+          const planned = z.dur ? parseFloat(this._hass.states[z.dur]?.state || 0) : 0;
+          const short = planned && secs < planned*60 - 60;
+          html += '<div class="lastrun-row"><span class="lastrun-zone">💧 ' + z.name + '</span>' +
+            '<span class="lastrun-dur" style="font-size:11px;color:' + (short ? '#ffb43c' : 'var(--secondary-text-color,#999)') + '">' +
+            fmtDur(secs) + (short ? ' of ' + planned + 'm' : '') + '</span></div>';
+        });
+      } else if (onSecs !== null) {
+        html += '<p style="color:var(--secondary-text-color,#666);margin-top:4px">No zones watered in this run window.</p>';
+      }
+      if (waiting.length) {
+        html += '<div class="lastrun-section-lbl" style="margin-top:10px">Still queued (' + waiting.length + ')</div>';
+        waiting.forEach(z => { html += '<div class="lastrun-row"><span class="lastrun-zone">⏳ ' + z.name + '</span><span class="lastrun-dur">—</span></div>'; });
+      }
+      if (skipped.length) {
+        html += '<div class="lastrun-section-lbl" style="margin-top:10px">Skipped / not scheduled (' + skipped.length + ')</div>';
+        skipped.forEach(z => { html += '<div class="lastrun-row"><span class="lastrun-skipped">⏭ ' + z.name + '</span><span class="lastrun-dur">—</span></div>'; });
+      }
+      if (missing.length) {
+        html += '<div class="lastrun-section-lbl" style="margin-top:10px">Did not run (' + missing.length + ')</div>';
+        missing.forEach(z => {
+          const sw = this._hass.states[z.sw];
+          const why = sw?.state === 'unavailable' ? 'unavailable' : (sw?.last_changed ? 'last ' + this._formatTimeAgo(new Date(sw.last_changed)) : 'never');
+          html += '<div class="lastrun-row"><span class="lastrun-skipped">⚪ ' + z.name + '</span><span class="lastrun-dur" style="font-size:11px">' + why + '</span></div>';
+        });
+      }
+    }
+
+    if (this._manualRunLog.length) {
+      html += '<div class="lastrun-section-lbl" style="margin-top:12px;opacity:0.8;font-size:11px">MANUAL RUNS</div>';
+      this._manualRunLog.forEach(e => {
+        html += '<div class="lastrun-row"><span class="lastrun-zone">🔧 ' + e.z + '</span>' +
+          '<span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">' + e.d + 'm • ' + this._formatTimeAgo(new Date(e.t*1000)) + '</span></div>';
+      });
+    }
+    body.innerHTML = html;
   }
 
-  
   _formatTimeAgo(date) {
     const now = Date.now();
     const diffMs = now - date.getTime();
@@ -1827,21 +1922,6 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (diffHour < 24) return diffHour + 'h ago';
     return Math.floor(diffHour / 24) + 'd ago';
   }
-
-  // Last Run recording disabled — now uses scheduler's built-in last_triggered
-  // _recordLastRun() {
-  //   const e = 'input_text.sprinkler_last_run';
-  //   if (!this._hass.states[e]) return;
-  //   const skipList = this._skipList();
-  //   // store compact data to fit in 255 char limit — short name truncation
-  //   const zones = this._activeZones().filter(z=>z.sw&&z.schedule_enabled!==false).map(z=>({
-  //     n: z.name.substring(0,12),
-  //     d: z.dur ? Math.round(parseFloat(this._hass.states[z.dur]?.state||0)) : null,
-  //     s: skipList.includes(z.sw) ? 1 : 0,
-  //   }));
-  //   const data = JSON.stringify({ ts: new Date().toISOString(), z: zones });
-  //   this._svc('input_text', 'set_value', {entity_id: e, value: data.substring(0, 255)});
-  // }
 
   _toggleDay(day) {
     const e=this._cfg.schedule_entity; if(!e)return;
@@ -1902,21 +1982,13 @@ class SprinklerDashCardV2 extends HTMLElement {
           const val1=s1.state, unit1=s1.attributes.unit_of_measurement||'';
           if (e1===this._cfg.rain_sensor||unit1==='mm') {
             const numVal=parseFloat(val1)||0;
-            if (numVal>=rainThresh && this._cfg.rules?.rain_disable_schedule!==false) {
-              warn=true;
-              if (this._cfg.schedule_entity&&this._hass.states[this._cfg.schedule_entity]?.state==='on') {
-                this._svc('switch','turn_off',{entity_id:this._cfg.schedule_entity});
-                this._rainDisabledAt = Date.now(); // record when rain disabled the schedule
-              }
-            }
+            if (numVal>=rainThresh && this._cfg.rules?.rain_disable_schedule!==false) warn=true;
           }
           if (s2 && slot.sensor2.includes('liquid_level')) {
             const pct=parseFloat(s2.state);
             if (pct<jojoLow && this._cfg.rules?.jojo_shutoff_zones!==false) {
               warn=true;
-              it.title='Jojo below '+jojoLow+'% — all zones shut off';
-              const running=this._activeZones().map(z=>z.sw).filter(sw=>sw&&this._hass.states[sw]?.state==='on');
-              if (running.length) { this._svc('switch','turn_off',{entity_id:running}); }
+              it.title='Tank below '+jojoLow+'% — scheduled runs blocked';
             }
             const unit1=s1.attributes.unit_of_measurement||'';
             parts.push(parseFloat(val1).toLocaleString()+(unit1?' '+unit1:'')+' - '+pct.toFixed(0)+'%');
@@ -1954,22 +2026,19 @@ class SprinklerDashCardV2 extends HTMLElement {
   _updateZones() {
     if(!this._built)return;
     let active=0;
+    const queued=this._queuedZoneNums();
     this._activeZones().forEach((z,i)=>{
-      const isOn=z.sw&&this._hass.states[z.sw]?.state==='on';
+      const swState=z.sw?this._hass.states[z.sw]:null;
+      const isOn=swState?.state==='on';
       const durVal=z.dur?parseFloat(this._hass.states[z.dur]?.state||10):10;
       const durMin=z.dur?parseFloat(this._hass.states[z.dur]?.attributes?.min??0):0;
       const durMax=z.dur?parseFloat(this._hass.states[z.dur]?.attributes?.max??60):60;
-      const lc=z.sw&&this._hass.states[z.sw]?.last_changed;
-      if(isOn){
-        active++;
-        if(!this._onTimes[i]||this._onTimes[i].lastChanged!==lc) this._onTimes[i]={ts:new Date(lc).getTime(),lastChanged:lc,totalSecs:durVal*60};
-        else if(this._prevDurVals[i]!==undefined&&this._prevDurVals[i]!==durVal) this._onTimes[i].totalSecs=durVal*60;
-      } else { delete this._onTimes[i]; }
-      this._prevDurVals[i]=durVal;
-      this.shadowRoot.getElementById('zone-'+i)?.classList.toggle('zone--on',isOn);
-      this.shadowRoot.getElementById('zone-'+i)?.classList.toggle('zone--disabled', z.schedule_enabled===false);
+      if(isOn) active++;
+      const root=this.shadowRoot.getElementById('zone-'+i);
+      root?.classList.toggle('zone--on',isOn);
+      root?.classList.toggle('zone--disabled', z.schedule_enabled===false);
       const skipped = this._isZoneSkipped(z);
-      this.shadowRoot.getElementById('zone-'+i)?.classList.toggle('zone--skip', skipped && !isOn);
+      root?.classList.toggle('zone--skip', skipped && !isOn);
       this.shadowRoot.getElementById('zskip-'+i)?.classList.toggle('zskip--active', skipped);
       const skipEl = this.shadowRoot.getElementById('zskip-'+i);
       if (skipEl) skipEl.title = skipped ? 'Skipped — tap to cancel' : 'Skip next scheduled run';
@@ -1977,14 +2046,14 @@ class SprinklerDashCardV2 extends HTMLElement {
       this.shadowRoot.getElementById('ztog-'+i)?.classList.toggle('ztoggle--on',isOn);
       const inp=this.shadowRoot.getElementById('zdur-'+i);
       if(inp&&inp!==this.shadowRoot.activeElement){inp.min=durMin;inp.max=durMax;inp.value=durVal;}
-      const elapsed=isOn&&this._onTimes[i]?(Date.now()-this._onTimes[i].ts)/1000:0;
-      this._renderProgress(i,isOn,elapsed,this._onTimes[i]?.totalSecs||durVal*60, skipped);
-      // last-run badge: show time since switch was last on (last_changed when state went off)
+      this._renderZoneProgress(i, z, queued);
+      // last-changed badge
       const zlastEl = this.shadowRoot.getElementById('zlast-'+i);
       if (zlastEl && !isOn && z.sw) {
-        const swState = this._hass.states[z.sw];
         const lc = swState?.last_changed;
-        if (lc) {
+        if (swState?.state==='unavailable') { zlastEl.textContent='unavailable'; zlastEl.className='zlast'; zlastEl.style.color='#ffb43c'; }
+        else if (lc) {
+          zlastEl.style.color='';
           const mins = Math.round((Date.now() - new Date(lc).getTime()) / 60000);
           if (mins < 60) { zlastEl.textContent='last: '+mins+'m ago'; zlastEl.className='zlast zlast--recent'; }
           else if (mins < 1440) { zlastEl.textContent='last: '+Math.floor(mins/60)+'h ago'; zlastEl.className='zlast'; }
@@ -1993,59 +2062,95 @@ class SprinklerDashCardV2 extends HTMLElement {
       } else if (zlastEl && isOn) { zlastEl.textContent=''; }
     });
     const badge=this.shadowRoot.getElementById('hdr-badge');
-    if(badge){badge.textContent=active>0?active+' watering':this._cfg.active_zones+' zones';badge.className='badge'+(active>0?' badge--active':'');}
+    if(badge){
+      let txt=this._cfg.active_zones+' zones';
+      if(active>0) txt=active+' watering'+(queued.length?' · '+queued.length+' queued':'');
+      else if(queued.length) txt=queued.length+' queued';
+      badge.textContent=txt; badge.className='badge'+(active>0||queued.length?' badge--active':'');
+    }
+  }
+
+  // Progress/countdown comes from the zone's HA timer, so it is correct after a
+  // page reload or HA restart and matches exactly when the valve will close.
+  _renderZoneProgress(i, z, queued) {
+    const isOn = z.sw && this._hass.states[z.sw]?.state==='on';
+    const t = this._hass.states[zoneTimer(i)];
+    let total = 0, rem = null;
+    if (isOn && t?.state==='active' && t.attributes?.finishes_at) {
+      total = durToSecs(t.attributes.duration);
+      rem = Math.max(0, (new Date(t.attributes.finishes_at).getTime() - Date.now())/1000);
+    }
+    const qpos = (queued||this._queuedZoneNums()).indexOf(i+1);
+    this._renderProgress(i, isOn, total && rem!==null ? total-rem : 0, total, this._isZoneSkipped(z), rem, qpos);
   }
 
   _updateSchedule() {
     if(!this._built)return;
     const e=this._cfg.schedule_entity; if(!e||!this._hass.states[e])return;
-    const ent=this._hass.states[e], isOn=ent.state==='on', attrs=ent.attributes||{};
+    const ent=this._hass.states[e], isOn=ent.state==='on'||ent.state==='triggered', attrs=ent.attributes||{};
     const tog=this.shadowRoot.getElementById('sched-toggle'); if(tog)tog.className='stoggle'+(isOn?' stoggle--on':'');
     this._days.forEach(d=>{ const el=this.shadowRoot.getElementById('sday-'+d); if(el)el.className='sday'+((attrs.weekdays||[]).includes(d)?' sday--on':''); });
     const timeEl=this.shadowRoot.getElementById('sched-time');
     if(timeEl&&!this._editingTime){ const t=(attrs.timeslots||[])[0]||''; timeEl.textContent=(typeof t==='string'?t:(t.start||'')).substring(0,5)||'--:--'; }
     const nextEl=this.shadowRoot.getElementById('sched-next');
-    if(nextEl&&attrs.next_trigger){
-      const d=new Date(attrs.next_trigger),now=new Date(),diff=d-now;
-      const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000);
-      const timeStr=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-      const todayDate=now.toDateString(), tomorrowDate=new Date(now.getTime()+86400000).toDateString();
-      let label;
-      if(diff<0) label='overdue';
-      else if(h<1) label='in '+m+'m';
-      else if(h<24) label='in '+h+'h '+(m>0?m+'m':'');
-      else if(d.toDateString()===tomorrowDate) label='Tomorrow '+timeStr;
-      else label=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+timeStr;
-      nextEl.textContent=isOn?'next: '+label:'disabled';
-      nextEl.className='sched-next'+(isOn?' sched-next--on':'');
+    if(!nextEl) return;
+    // rain pause set by the controller automation
+    const rp=this._hass.states[RAIN_PAUSE_E]?.state||'';
+    const rpMs=Date.parse(rp);
+    if(!isOn && rp && !isNaN(rpMs)){
+      if(this._cfg.rules?.rain_auto_restore===false){ nextEl.textContent='paused by rain 🌧'; }
+      else {
+        const left=rpMs+(parseFloat(this._cfg.rain_restore_hours)||48)*3600000-Date.now();
+        if(left>0){ const h=Math.floor(left/3600000),m=Math.floor((left%3600000)/60000); nextEl.textContent='rain pause · resumes in '+h+'h '+m+'m 🌧'; }
+        else nextEl.textContent='rain pause · resumes when dry 🌤';
+      }
+      nextEl.className='sched-next'; nextEl.style.color='#ffcc44';
+      return;
     }
+    nextEl.style.color='';
+    if(!attrs.next_trigger){ nextEl.textContent=isOn?'—':'disabled'; nextEl.className='sched-next'; return; }
+    const d=new Date(attrs.next_trigger),now=new Date(),diff=d-now;
+    const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000);
+    const timeStr=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false});
+    const tomorrowDate=new Date(now.getTime()+86400000).toDateString();
+    let label;
+    if(diff<0) label='overdue';
+    else if(h<1) label='in '+m+'m';
+    else if(h<24) label='in '+h+'h '+(m>0?m+'m':'');
+    else if(d.toDateString()===tomorrowDate) label='Tomorrow '+timeStr;
+    else label=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+timeStr;
+    nextEl.textContent=isOn?'next: '+label:'disabled';
+    nextEl.className='sched-next'+(isOn?' sched-next--on':'');
   }
 
-  _renderProgress(i,isOn,elapsed,total,skipped){
+  _renderProgress(i,isOn,elapsed,total,skipped,rem=null,qpos=-1){
     const prog=this.shadowRoot.getElementById('zprog-'+i), stat=this.shadowRoot.getElementById('zstat-'+i);
     if(!prog||!stat)return;
-    if(!isOn||total===0){
+    if(!isOn){
       prog.style.width='0%';
-      if (skipped) { stat.className='zstat zstat--skip'; stat.textContent='Skip next run'; }
+      if (qpos>=0) { stat.className='zstat zstat--on'; stat.textContent=qpos===0?'Up next':'Queued #'+(qpos+1); }
+      else if (skipped) { stat.className='zstat zstat--skip'; stat.textContent='Skip next run'; }
       else { stat.className='zstat'; stat.textContent='Ready'; }
       return;
     }
-    prog.style.width=Math.min(100,(elapsed/total)*100).toFixed(2)+'%';
-    const rem=Math.max(0,Math.round(total-elapsed)),m=Math.floor(rem/60),s=rem%60;
     stat.className='zstat zstat--on'; stat.innerHTML='';
     const dot=document.createElement('span'); dot.className='pulse'; stat.appendChild(dot);
+    if (rem===null || !total) {
+      // on, but no timer armed yet (controller arms it within seconds)
+      prog.style.width='100%';
+      stat.appendChild(document.createTextNode(' Watering'));
+      return;
+    }
+    prog.style.width=Math.min(100,(elapsed/total)*100).toFixed(2)+'%';
+    const r=Math.max(0,Math.round(rem)),m=Math.floor(r/60),s=r%60;
     stat.appendChild(document.createTextNode(' '+m+'m '+String(s).padStart(2,'0')+'s left'));
   }
 
   _tick(){
     if(!this._hass||!this._built)return;
-    this._activeZones().forEach((z,i)=>{
-      const isOn=z.sw&&this._hass.states[z.sw]?.state==='on';
-      const durVal=z.dur?parseFloat(this._hass.states[z.dur]?.state||10):10;
-      const elapsed=isOn&&this._onTimes[i]?(Date.now()-this._onTimes[i].ts)/1000:0;
-      this._renderProgress(i,isOn,elapsed,this._onTimes[i]?.totalSecs||durVal*60, this._isZoneSkipped(z));
-    });
-    this._updateSchedule(); this._updateMeta();
+    const queued=this._queuedZoneNums();
+    this._activeZones().forEach((z,i)=>this._renderZoneProgress(i, z, queued));
+    this._updateSchedule();
   }
 
   getCardSize(){ return 7; }

@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, and everything else is configured and auto-created from within the card UI.
 
-![Version](https://img.shields.io/badge/version-v2.9.75-green)
+![Version](https://img.shields.io/badge/version-v3.0.0-green)
 ![HACS](https://img.shields.io/badge/HACS-Default-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
@@ -34,17 +34,23 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 ## Features
 
 **Zero setup scripting**
-- Auto-creates `script.sprinkler` on first load, built from your configured zones
-- Auto-creates the Scheduler entity (defaults to Mon/Wed/Fri at 06:00)
-- Auto-creates required helper entities for skip-next-run and manual run logging
-- Script silently rebuilds whenever zones are changed, reordered, or toggled
+- Auto-creates `script.sprinkler`, the Scheduler entity (defaults to Mon/Wed/Fri at 06:00), one `timer.sprinkler_zone_N` per zone, and `automation.sprinkler_controller` on first load (admin user)
+- Auto-creates required helpers: skip list, run queue, rain pause, manual run log
+- Everything silently rebuilds whenever zones or rules are changed, reordered, or toggled
+
+**Runs in Home Assistant, not in your browser (v3)**
+- Every zone gets a restoring HA timer. Whenever a zone turns on — schedule, Manual Run, the zone toggle, the eWeLink/Sonoff app, or any other automation — the controller arms its timer and closes the valve when it runs out
+- Scheduled runs are held in a persistent queue (`input_text.sprinkler_queue`). If HA restarts mid-run, the running zone still stops on time and the remaining zones carry on
+- Valve-close is verified and retried up to 3 times, with a notification if a valve will not close
+- A once-a-minute watchdog arms a timer for any zone found running without one
+- Closing the dashboard, switching views, or a phone going to sleep can no longer leave a zone running
 
 **Zone control**
 - Up to 12 configurable zones — 2-column grid with toggle, progress bar, countdown timer, and 1-minute adjustable duration
 - Zone expand popup — tap any zone tile to open a large overlay with big +/− duration buttons, status, last activity, and a **Manual Run** button
-- Manual Run auto-stop — starts the zone, runs it for exactly the duration you set, turns it off automatically, and restores the zone's original scheduled duration afterwards — no need to remember to turn it off
+- Manual Run auto-stop — pick a duration for this run only (the scheduled duration is not changed); the zone's HA timer closes the valve, even if the browser is closed or HA restarts
 - Zone last-run badge — shows "last: Xm/Xh/Xd ago" on each tile
-- Smart Resume — if Home Assistant restarts mid-run, the card detects any zone still on, resumes it if still within its duration, or stops it immediately if it overran
+- Live countdown from the zone's HA timer, "Up next / Queued #n" badges during a schedule run
 - Per-zone schedule toggle — tick/untick each zone to include or exclude from scheduled runs
 - Per-zone skip next run — one-tap skip for the next run only, self-clearing after the schedule fires
 
@@ -52,10 +58,10 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 - Built-in scheduler section — enable/disable, set run days, set run time with mobile-friendly HH/MM editor
 - Smart next-run countdown — shows "Tonight 22:00", "Tomorrow 06:00", or "in 3h 45m"
 - Start Schedule button — manually triggers the full zone sequence
-- Stop Schedule button — immediately stops the script and closes all valves (with confirmation)
+- Stop Schedule button — clears the run queue and closes all valves (with confirmation)
 
 **Run history**
-- Last Run popup — shows the most recent scheduled run's timestamp, then checks each zone's actual switch activity against that run's time window so it only lists zones that genuinely watered (not just zones that happen to be enabled)
+- Last Run popup — reads HA history for the most recent scheduled run and shows how long each zone *actually* watered (short runs highlighted), plus zones still queued, skipped, or that did not run
 - Skipped zones and zones with no recent activity are shown in their own sections, so a zone that's quietly stopped running (e.g. toggled off, disconnected) is surfaced instead of hidden
 - Manual runs are logged separately with a 🔧 icon, the duration used, and how long ago they ran — persisted via an auto-created helper so they survive page refreshes
 
@@ -67,10 +73,10 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 - Tap any slot to open the entity detail popup
 
 **Automation rules**
-- Rain auto-disable — schedule turns off when rain exceeds configured mm threshold (slot turns yellow)
-- Rain auto-restore — seasonal auto-adjust: 24h summer (Oct–Mar), 48h winter (Apr–Sep), with manual override and reset buttons
-- Postpone countdown — shows "Resumes in Xh Xm" with rain/clear icon and which scheduled day will be skipped
-- Jojo/tank low-level shutoff — all valves close immediately when tank drops below configured % (slot turns red)
+- Rain auto-disable — schedule turns off when rain crosses the configured mm threshold (runs in HA; slot turns yellow)
+- Rain auto-restore — schedule re-enables after the configured hours once rain is back below the threshold; more rain restarts the countdown. Only restores a pause the rain rule caused — a schedule you switched off yourself stays off
+- Pause countdown — schedule section shows "rain pause · resumes in Xh Xm"
+- Tank low-level shutoff — all valves close and the queued run is cancelled when the tank drops below the configured % (runs in HA)
 - Confirmation popups — optional confirmation before any zone or schedule action
 
 **Settings & persistence**
@@ -220,9 +226,10 @@ The card auto-creates `input_text.sprinkler_skip_zones` to track this — no set
 Tap **Last Run** to see what happened during the most recent scheduled run.
 
 - **Timestamp** — when the schedule last triggered (from `script.sprinkler`'s `last_triggered` attribute)
-- **Watered** — zones whose switch actually changed state within that run's time window (a couple of minutes before start, up to 4 hours after, to allow for long sequential runs). Only zones genuinely detected as active during that window are listed here.
-- **Skipped** — zones that were marked "skip next run" for that run
-- **No recent activity** — zones that are configured/enabled but show no switch activity near the last run, along with how long ago they last changed. This is the section to check if a zone has silently stopped watering (e.g. it was toggled off, its switch is unavailable, or it's disconnected).
+- **Watered** — actual on-time per zone from HA's recorder history (up to 6 hours after start). Zones that ran noticeably shorter than configured are shown in amber, e.g. `6m 46s of 9m`
+- **Still queued** — zones waiting their turn while a run is in progress
+- **Skipped / not scheduled** — zones marked "skip next run" or excluded from the schedule
+- **Did not run** — zones that should have run but show no activity (or are unavailable)
 - **Manual Runs** — any zones run manually via the zone expand popup, shown with a 🔧 icon, the duration used, and how long ago it ran. This is stored in an auto-created `input_text.sprinkler_manual_log` helper so it survives page refreshes.
 
 No manual setup is required — the manual run log helper is created automatically on first load.
@@ -240,6 +247,7 @@ No manual setup is required — the manual run log helper is created automatical
 
 | Version | Changes |
 |---|---|
+| v3.0.0 | **MAJOR — watering now runs inside Home Assistant.** Fixes: (1) a HA restart mid-schedule killed `script.sprinkler`, so the remaining zones never ran — runs now use a persistent queue and resume after a restart; (2) Manual Run relied on a browser `setTimeout`, so closing the dashboard, switching view or a sleeping phone left the zone on — every zone now has a restoring `timer.sprinkler_zone_N` and the auto-generated `automation.sprinkler_controller` closes the valve; zones switched on from the toggle or the Sonoff app now auto-stop too; (3) skip-list and manual-log helpers were created with an `initial` value, so HA wiped them on every restart — the card now repairs them; (4) cancelling a confirm popup left its OK handler attached, so the next confirm could also fire the cancelled action; (5) rain auto-restore only ran while a dashboard was open and could re-enable a schedule you (or the tank shutoff) had turned off; (6) rain/tank rules fired service calls every second from every open browser. Also: valve-close verify + retry with notification, per-minute watchdog, countdowns from HA timers, "Queued" badges, Last Run shows actual watered time from history, Manual Run duration no longer changes the scheduled duration. |
 | v2.9.75 | **FIX (correctness):** Last Run no longer assumes every configured zone ran. It now checks each zone's switch `last_changed` against the scheduled run's time window and only lists a zone under "Watered" if it actually toggled near that run. Zones with no activity near the run show separately under "No recent activity" with how long ago they last changed — surfaces zones that silently stopped running (e.g. toggled off) instead of hiding it. |
 | v2.9.74 | **NEW:** Manual run history now PERSISTS across page refreshes! Added `input_text.sprinkler_manual_log` helper (auto-created) that saves each manual run. Loaded automatically on card startup, so manual runs stay visible in Last Run even after reloading the page. |
 | v2.9.73 | Added manual run display back to Last Run. Shows both scheduled runs (with all zones) and recent manual runs (with 🔧 icon, duration, timestamp). Perfect combo! |
