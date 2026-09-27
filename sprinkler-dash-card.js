@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.0.1';
+const CARD_VERSION = '3.0.2';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -7,7 +7,7 @@ const MAX_ZONES = 12;
 //   input_text.sprinkler_queue      "run:3,4,5" while a schedule run is in progress
 //   input_text.sprinkler_rain_pause ISO time the rain rule paused the schedule
 //   automation.sprinkler_controller auto-generated from the card config
-const ENGINE_VERSION = 4;
+const ENGINE_VERSION = 5;
 const CONTROLLER_ID = 'sprinkler_dash_controller';
 const QUEUE_E = 'input_text.sprinkler_queue';
 const RAIN_PAUSE_E = 'input_text.sprinkler_rain_pause';
@@ -282,7 +282,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       z: this._engineZones().map(z=>[z.n,z.sw,z.dur,z.sched,z.name]),
       r: this._cfg.rules||{}, rs: this._cfg.rain_sensor||'', rt: this._cfg.rain_threshold||5,
       rh: this._cfg.rain_restore_hours||48, se: this._cfg.schedule_entity||'',
-      jl: this._jojoLevelEntity(), jp: this._cfg.jojo_low_pct||35,
+      jl: this._jojoLevelEntity(), jp: this._cfg.jojo_low_pct||35, ns: this._cfg.notify_service||'',
     });
     let h = 5381;
     for (let i = 0; i < data.length; i++) h = ((h << 5) + h + data.charCodeAt(i)) >>> 0;
@@ -395,6 +395,12 @@ class SprinklerDashCardV2 extends HTMLElement {
     const cont = { continue_on_error: true };
     const advance = { event: ADVANCE_EVENT, event_data: {} };
     const tpl = (t) => ({ condition:'template', value_template: t });
+    const notifySvc = /^notify\.[a-z0-9_]+$/.test(this._cfg.notify_service||'') ? this._cfg.notify_service : '';
+    // persistent notification always, plus the user's notify service (WhatsApp, phone…) if configured
+    const alert = (id, message) => [
+      { action:'persistent_notification.create', data:{ title:'Sprinklers', notification_id:id, message } },
+      ...(notifySvc ? [{ action: notifySvc, data:{ message: '💧 Sprinklers: ' + message }, continue_on_error: true }] : []),
+    ];
 
     const triggers = [
       { trigger:'event', event_type: ADVANCE_EVENT, id:'advance' },
@@ -416,8 +422,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       if: [ tpl("{{ states('" + level + "') | float(100) < " + lowPct + " and (as_timestamp(now()) - as_timestamp((expand('" + level + "') | first).last_changed)) > 120 }}") ],
       then: [
         { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value:'' } },
-        { action:'persistent_notification.create', data:{ title:'Sprinklers', notification_id:'sprinkler_jojo',
-          message: "Schedule run cancelled — tank level {{ states('" + level + "') }}% is below " + lowPct + "%." } },
+        ...alert('sprinkler_jojo', "Schedule run cancelled — tank level {{ states('" + level + "') }}% is below " + lowPct + "%."),
         { stop: 'tank low' },
       ],
     }] : [];
@@ -467,8 +472,7 @@ class SprinklerDashCardV2 extends HTMLElement {
           until:[ tpl("{{ not is_state(z.sw, 'on') or repeat.index >= 3 }}") ],
         }},
         { if:[ tpl("{{ is_state(z.sw, 'on') }}") ], then:[
-          { action:'persistent_notification.create', data:{ title:'Sprinklers', notification_id:'sprinkler_stuck',
-            message:"{{ z.name }} did not turn off after 3 attempts — check the valve." } },
+          ...alert('sprinkler_stuck', "{{ z.name }} did not turn off after 3 attempts — check the valve."),
         ]},
         advance,
       ]},
@@ -525,8 +529,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (useJojo) branches.push({ conditions:[{ condition:'trigger', id:'jojo_low' }], sequence:[
       { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value:'' } },
       { action:'switch.turn_off', target:{ entity_id: sws }, ...cont },
-      { action:'persistent_notification.create', data:{ title:'Sprinklers', notification_id:'sprinkler_jojo',
-        message: "Tank level {{ states('" + level + "') }}% dropped below " + lowPct + "% — all zones switched off." } },
+      ...alert('sprinkler_jojo', "Tank level {{ states('" + level + "') }}% stayed below " + lowPct + "% — all zones switched off. Scheduled runs stay blocked until it refills."),
     ]});
     if (useRain) {
       branches.push({ conditions:[{ condition:'trigger', id:'rain_high' }], sequence:[
@@ -1411,8 +1414,33 @@ class SprinklerDashCardV2 extends HTMLElement {
     const jlHint=document.createElement('span'); jlHint.style.cssText='font-size:9px;color:var(--secondary-text-color,#666);flex-shrink:0'; jlHint.textContent='% → shut off zones';
     jlRow.append(jlLbl,jlInp,jlHint); slist.appendChild(jlRow);
 
+    // number fields save as soon as they change — the controller automation is rebuilt from them
+    [[rtInp,'rain_threshold',5],[rrInp,'rain_restore_hours',48],[jlInp,'jojo_low_pct',35]].forEach(([inp,key,def])=>{
+      inp.addEventListener('change',()=>{
+        const v=parseFloat(inp.value);
+        if (isNaN(v)) { inp.value=this._cfg[key]??def; return; }
+        if (v===this._cfg[key]) return;
+        this._saveConfig({[key]:v});
+        this._updateRuleDescriptions();
+        this._update();
+      });
+    });
+
+    // notify service for tank-low / stuck-valve alerts (e.g. notify.whatsapp, notify.mobile_app_phone)
+    const ntRow=document.createElement('div'); ntRow.className='cfg-field-row';
+    const ntLbl=document.createElement('label'); ntLbl.className='cfg-field-lbl'; ntLbl.textContent='Notify';
+    const ntInp=document.createElement('input'); ntInp.type='text'; ntInp.className='cfg-field-input';
+    ntInp.value=this._cfg.notify_service||''; ntInp.placeholder='notify.mobile_app_phone (optional)';
+    ntInp.addEventListener('change',()=>{
+      const v=ntInp.value.trim();
+      if (v && !/^notify\.[a-z0-9_]+$/.test(v)) { ntInp.style.borderColor='#c23030'; return; }
+      ntInp.style.borderColor='';
+      this._saveConfig({notify_service:v});
+    });
+    ntRow.append(ntLbl,ntInp); slist.appendChild(ntRow);
+
     // entity fields
-    [{label:'Rain sensor',key:'rain_sensor',val:this._cfg.rain_sensor||''},{label:'Weather',key:'weather_entity',val:this._cfg.weather_entity||''},{label:'Jojo sensor',key:'jojo_sensor',val:this._cfg.jojo_sensor||''},{label:'Schedule sw',key:'schedule_entity',val:this._cfg.schedule_entity||''}]
+    [{label:'Rain sensor',key:'rain_sensor',val:this._cfg.rain_sensor||''},{label:'Weather',key:'weather_entity',val:this._cfg.weather_entity||''},{label:'Jojo sensor',key:'jojo_sensor',val:this._cfg.jojo_sensor||''},{label:'Jojo level %',key:'jojo_level_sensor',val:this._cfg.jojo_level_sensor||''},{label:'Schedule sw',key:'schedule_entity',val:this._cfg.schedule_entity||''}]
     .forEach(f=>{
       const row=document.createElement('div'); row.className='cfg-field-row';
       const lbl=document.createElement('label'); lbl.className='cfg-field-lbl'; lbl.textContent=f.label;
