@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.0.0';
+const CARD_VERSION = '3.0.1';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -7,7 +7,7 @@ const MAX_ZONES = 12;
 //   input_text.sprinkler_queue      "run:3,4,5" while a schedule run is in progress
 //   input_text.sprinkler_rain_pause ISO time the rain rule paused the schedule
 //   automation.sprinkler_controller auto-generated from the card config
-const ENGINE_VERSION = 3;
+const ENGINE_VERSION = 4;
 const CONTROLLER_ID = 'sprinkler_dash_controller';
 const QUEUE_E = 'input_text.sprinkler_queue';
 const RAIN_PAUSE_E = 'input_text.sprinkler_rain_pause';
@@ -404,14 +404,16 @@ class SprinklerDashCardV2 extends HTMLElement {
       { trigger:'homeassistant', event:'start', id:'ha_start' },
       { trigger:'time_pattern', minutes:'/1', id:'watchdog' },
     ];
-    if (useJojo) triggers.push({ trigger:'numeric_state', entity_id: level, below: lowPct, id:'jojo_low' });
+    // 'for' debounces level-sensor glitches (e.g. 48% -> 30% -> 48% within seconds)
+    if (useJojo) triggers.push({ trigger:'numeric_state', entity_id: level, below: lowPct, for:{ minutes: 2 }, id:'jojo_low' });
     if (useRain) {
       triggers.push({ trigger:'numeric_state', entity_id: rain, above: thresh, id:'rain_high' });
       triggers.push({ trigger:'state', entity_id: sched, from:'off', to:'on', id:'sched_on' });
     }
 
     const jojoAbort = useJojo ? [{
-      if: [ tpl("{{ states('" + level + "') | float(100) < " + lowPct + " }}") ],
+      // only a level that has been low for 2+ minutes counts — a single glitchy reading must not cancel a run
+      if: [ tpl("{{ states('" + level + "') | float(100) < " + lowPct + " and (as_timestamp(now()) - as_timestamp((expand('" + level + "') | first).last_changed)) > 120 }}") ],
       then: [
         { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value:'' } },
         { action:'persistent_notification.create', data:{ title:'Sprinklers', notification_id:'sprinkler_jojo',
