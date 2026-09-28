@@ -2,7 +2,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, and everything else is configured and auto-created from within the card UI.
 
-![Version](https://img.shields.io/badge/version-v3.0.3-green)
+![Version](https://img.shields.io/badge/version-v3.0.4-green)
 ![HACS](https://img.shields.io/badge/HACS-Default-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
@@ -247,6 +247,7 @@ No manual setup is required — the manual run log helper is created automatical
 
 | Version | Changes |
 |---|---|
+| v3.0.4 | **FIX:** Rain pause countdown now runs from the **last** rain, not from the moment rain crossed the limit — every further rain increment restarts it. While rain is still falling the schedule shows "raining · resumes Xh after it stops". |
 | v3.0.3 | Info bar: the tank slot keeps its `4,650 L - 95%` format and low-level warning colour when Sensor 2 is the sensor chosen in **Jojo level %** (e.g. a stable template sensor), not only `*liquid_level*` sensors. |
 | v3.0.2 | **Jojo low % is now the single source of truth** — the controller uses the card setting for the tank shutoff. New settings: **Jojo level %** (pick the level sensor the shutoff watches — e.g. a smoothed/stable template sensor) and **Notify** (e.g. `notify.whatsapp`) for tank-low and stuck-valve alerts. Rain limit / Rain restore / Jojo low % now save as soon as you change them (previously only via 💾 Save). |
 | v3.0.1 | **FIX:** Tank low-level shutoff now requires the level to stay below the threshold for 2 minutes. Level sensors can glitch (e.g. 48% → 30% → 48% within seconds); a single bad reading used to cancel runs / switch the schedule off. |

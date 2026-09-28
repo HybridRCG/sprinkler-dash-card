@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.0.3';
+const CARD_VERSION = '3.0.4';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -7,7 +7,7 @@ const MAX_ZONES = 12;
 //   input_text.sprinkler_queue      "run:3,4,5" while a schedule run is in progress
 //   input_text.sprinkler_rain_pause ISO time the rain rule paused the schedule
 //   automation.sprinkler_controller auto-generated from the card config
-const ENGINE_VERSION = 5;
+const ENGINE_VERSION = 6;
 const CONTROLLER_ID = 'sprinkler_dash_controller';
 const QUEUE_E = 'input_text.sprinkler_queue';
 const RAIN_PAUSE_E = 'input_text.sprinkler_rain_pause';
@@ -414,6 +414,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (useJojo) triggers.push({ trigger:'numeric_state', entity_id: level, below: lowPct, for:{ minutes: 2 }, id:'jojo_low' });
     if (useRain) {
       triggers.push({ trigger:'numeric_state', entity_id: rain, above: thresh, id:'rain_high' });
+      // every rain increment (state value only — to:null ignores attribute updates)
+      triggers.push({ trigger:'state', entity_id: rain, to: null, id:'rain_more' });
       triggers.push({ trigger:'state', entity_id: sched, from:'off', to:'on', id:'sched_on' });
     }
 
@@ -542,6 +544,13 @@ class SprinklerDashCardV2 extends HTMLElement {
             { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value: "{{ now().isoformat() }}" } },
           ]},
         ]},
+      ]});
+      // still raining while paused: the countdown runs from the LAST rain, not from when it crossed the limit
+      branches.push({ conditions:[{ condition:'trigger', id:'rain_more' }], sequence:[
+        tpl("{{ states('" + RAIN_PAUSE_E + "') not in ['', 'unknown', 'unavailable']" +
+            " and trigger.to_state is not none and trigger.from_state is not none" +
+            " and (trigger.to_state.state | float(0)) > (trigger.from_state.state | float(0)) }}"),
+        { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value: "{{ now().isoformat() }}" } },
       ]});
       // schedule switched on by hand (or by the restore) — no pending rain pause
       branches.push({ conditions:[{ condition:'trigger', id:'sched_on' }], sequence:[
@@ -2132,7 +2141,9 @@ class SprinklerDashCardV2 extends HTMLElement {
       if(this._cfg.rules?.rain_auto_restore===false){ nextEl.textContent='paused by rain 🌧'; }
       else {
         const left=rpMs+(parseFloat(this._cfg.rain_restore_hours)||48)*3600000-Date.now();
-        if(left>0){ const h=Math.floor(left/3600000),m=Math.floor((left%3600000)/60000); nextEl.textContent='rain pause · resumes in '+h+'h '+m+'m 🌧'; }
+        const sinceRain=Date.now()-rpMs;
+        if(sinceRain<15*60000){ nextEl.textContent='raining 🌧 · resumes '+(parseFloat(this._cfg.rain_restore_hours)||48)+'h after it stops'; }
+        else if(left>0){ const h=Math.floor(left/3600000),m=Math.floor((left%3600000)/60000); nextEl.textContent='rain pause · resumes in '+h+'h '+m+'m'; }
         else nextEl.textContent='rain pause · resumes when dry 🌤';
       }
       nextEl.className='sched-next'; nextEl.style.color='#ffcc44';
