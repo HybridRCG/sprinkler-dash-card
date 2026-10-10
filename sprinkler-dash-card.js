@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.0.4';
+const CARD_VERSION = '3.0.5';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -7,7 +7,7 @@ const MAX_ZONES = 12;
 //   input_text.sprinkler_queue      "run:3,4,5" while a schedule run is in progress
 //   input_text.sprinkler_rain_pause ISO time the rain rule paused the schedule
 //   automation.sprinkler_controller auto-generated from the card config
-const ENGINE_VERSION = 6;
+const ENGINE_VERSION = 7;
 const CONTROLLER_ID = 'sprinkler_dash_controller';
 const QUEUE_E = 'input_text.sprinkler_queue';
 const RAIN_PAUSE_E = 'input_text.sprinkler_rain_pause';
@@ -406,7 +406,9 @@ class SprinklerDashCardV2 extends HTMLElement {
       { trigger:'event', event_type: ADVANCE_EVENT, id:'advance' },
       ...Z.map(z => ({ trigger:'event', event_type:'timer.finished', event_data:{ entity_id: z.t }, id:'timer_done' })),
       { trigger:'state', entity_id: sws, from:'off', to:'on', id:'zone_on' },
-      { trigger:'state', entity_id: sws, from:'on', to:'off', id:'zone_off' },
+      // 'for' debounces Sonoff on->off->on bounces right after switch-on (seen within 20ms) —
+      // without it the bounce cancels the zone timer and starts the next zone in parallel
+      { trigger:'state', entity_id: sws, from:'on', to:'off', for:{ seconds: 5 }, id:'zone_off' },
       { trigger:'homeassistant', event:'start', id:'ha_start' },
       { trigger:'time_pattern', minutes:'/1', id:'watchdog' },
     ];
@@ -435,6 +437,8 @@ class SprinklerDashCardV2 extends HTMLElement {
         { variables:{ q: "{{ states('" + QUEUE_E + "') }}" } },
         tpl("{{ q.startswith('run:') }}"),
         tpl("{{ zones | map(attribute='t') | select('is_state','active') | list | count == 0 }}"),
+        // never open a valve while another zone valve is still physically on
+        tpl("{{ zones | map(attribute='sw') | select('is_state','on') | list | count == 0 }}"),
         { variables:{ rest: "{{ q[4:].split(',') | reject('eq','') | list }}" } },
         { if:[ tpl("{{ rest | count == 0 }}") ], then:[
           { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value:'' } },
