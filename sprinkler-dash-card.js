@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.1.1';
+const CARD_VERSION = '3.2.0';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -110,6 +110,9 @@ class SprinklerDashCardV2 extends HTMLElement {
       this._buildZoneGrid();
     }
 
+    this._buildSchedules();
+    this._applyZoneLayout();
+
     // update zone name spans in main grid (config panel inputs are live)
     this._activeZones().forEach((z, i) => {
       const span = this.shadowRoot.getElementById('zone-'+i)?.querySelector('.zname');
@@ -119,8 +122,41 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._update();
   }
 
-  connectedCallback() { this._tickInterval = setInterval(()=>this._tick(), 1000); }
-  disconnectedCallback() { clearInterval(this._tickInterval); clearTimeout(this._engineRebuildTimer); }
+  connectedCallback() {
+    this._tickInterval = setInterval(()=>this._tick(), 1000);
+    // re-flow the zone grid when the card is resized (sections layout, window, sidebar)
+    if (window.ResizeObserver && !this._ro) this._ro = new ResizeObserver(() => this._applyZoneLayout());
+    this._ro?.observe(this);
+  }
+  disconnectedCallback() { clearInterval(this._tickInterval); clearTimeout(this._engineRebuildTimer); this._ro?.disconnect(); }
+
+  // Zone grid: 2 or 3 columns, and the last row always stretches so there is no gap.
+  // auto: 3 columns when the card is wide enough and the count suits it (3, 5, 6, 7, 9, 11, 12),
+  // otherwise 2. A 6-track grid lets 3 tiles (span 2), 2 tiles (span 3) or 1 tile (span 6) fill a row.
+  _zoneColumns(width, count) {
+    const pref = String(this._cfg.zone_columns || 'auto');
+    if (pref === '2' || pref === '3') return parseInt(pref);
+    if (width < 560 || count < 3) return 2;
+    return (count % 3 === 0 || count % 2 === 1) ? 3 : 2;
+  }
+
+  _applyZoneLayout() {
+    const grid = this.shadowRoot?.getElementById('zones'); if (!grid || !this._cfg) return;
+    const tiles = [...grid.children];
+    const n = tiles.length; if (!n) return;
+    const width = this.getBoundingClientRect().width || grid.clientWidth || 0;
+    const cols = this._zoneColumns(width, n);
+    if (this._layoutKey === cols + ':' + n) return;
+    this._layoutKey = cols + ':' + n;
+    grid.style.gridTemplateColumns = 'repeat(6, minmax(0, 1fr))';
+    grid.classList.toggle('zones--3', cols === 3);
+    const rem = n % cols, lastRowStart = n - rem;
+    tiles.forEach((t, i) => {
+      let span = 6 / cols;
+      if (rem && i >= lastRowStart) span = 6 / rem;
+      t.style.gridColumn = 'span ' + span;
+    });
+  }
 
   set hass(hass) {
     const prevHass = this._hass;
@@ -271,6 +307,11 @@ class SprinklerDashCardV2 extends HTMLElement {
     return '';
   }
 
+  // configured schedule switches (1 or 2), de-duplicated
+  _schedEntities() {
+    return [this._cfg?.schedule_entity, this._cfg?.schedule_entity_2].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
+  }
+
   _engineSignature() {
     const data = JSON.stringify({
       v: ENGINE_VERSION,
@@ -278,6 +319,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       r: this._cfg.rules||{}, rs: this._cfg.rain_sensor||'', rt: this._cfg.rain_threshold||5,
       rh: this._cfg.rain_restore_hours||48, se: this._cfg.schedule_entity||'',
       jl: this._jojoLevelEntity(), jp: this._cfg.jojo_low_pct||35, ns: this._cfg.notify_service||'',
+      ...(this._schedEntities().length > 1 ? { se2: this._schedEntities()[1] } : {}),
     });
     let h = 5381;
     for (let i = 0; i < data.length; i++) h = ((h << 5) + h + data.charCodeAt(i)) >>> 0;
@@ -305,6 +347,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       description: MARKER + '. Loads the run queue; automation.sprinkler_controller runs the zones.',
       mode: 'single',
       sequence: [
+        // with two schedules a run can still be going when the other one fires: do not restart it
+        ...(this._schedEntities().length > 1 ? [{ condition:'template', value_template: "{{ not states('" + QUEUE_E + "').startswith('run:') }}" }] : []),
         { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value: 'run:' + nums.join(',') } },
         { event: ADVANCE_EVENT, event_data: { source: 'script' } },
       ],
@@ -525,7 +569,9 @@ class SprinklerDashCardV2 extends HTMLElement {
     const Z = this._engineZones();
     const sws = Z.map(z => z.sw);
     const rules = this._cfg.rules || {};
-    const sched = this._cfg.schedule_entity || '';
+    const scheds = this._schedEntities();
+    const sched = scheds[0] || '';
+    const multi = scheds.length > 1;   // single schedule: generated automation is unchanged from v3.1
     const rain = this._cfg.rain_sensor || '';
     const thresh = parseFloat(this._cfg.rain_threshold) || 5;
     const restoreH = parseFloat(this._cfg.rain_restore_hours) || 48;
@@ -535,6 +581,11 @@ class SprinklerDashCardV2 extends HTMLElement {
     const useRestore = useRain && rules.rain_auto_restore !== false;
     const useJojo = rules.jojo_shutoff_zones !== false && !!level;
 
+    const ps = "states('" + RAIN_PAUSE_E + "')";
+    const pauseSet = ps + " not in ['', 'unknown', 'unavailable']";
+    const pauseIso = ps + ".split('|')[0]";
+    // schedules the rain rule paused; a pause written by single-schedule mode (no '|') means the first schedule
+    const pausedList = "((" + ps + ".split('|')[1].split(',')) if '|' in " + ps + " else ['" + sched + "']) | reject('eq','') | list";
     const zoneBy = (key, expr) => "{{ zones | selectattr('" + key + "','eq', " + expr + ") | first | default({}) }}";
     const minsOf = "{{ ((states(z.dur) | int(0)) if z.dur else 10) }}";
     const durTpl = "{{ '%02d:%02d:00' % ((mins | int) // 60, (mins | int) % 60) }}";
@@ -564,7 +615,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       triggers.push({ trigger:'numeric_state', entity_id: rain, above: thresh, id:'rain_high' });
       // every rain increment (state value only — to:null ignores attribute updates)
       triggers.push({ trigger:'state', entity_id: rain, to: null, id:'rain_more' });
-      triggers.push({ trigger:'state', entity_id: sched, from:'off', to:'on', id:'sched_on' });
+      triggers.push({ trigger:'state', entity_id: multi ? scheds : sched, from:'off', to:'on', id:'sched_on' });
     }
 
     const jojoAbort = useJojo ? [{
@@ -667,13 +718,22 @@ class SprinklerDashCardV2 extends HTMLElement {
             { action:'timer.start', target:{ entity_id: "{{ z.t }}" }, data:{ duration: durTpl }, ...cont },
           ]},
         ]}},
-        ...(useRestore ? [{ if:[ tpl(
+        ...(useRestore && !multi ? [{ if:[ tpl(
           "{{ states('" + RAIN_PAUSE_E + "') not in ['', 'unknown', 'unavailable'] and is_state('" + sched + "', 'off')" +
           " and states('" + rain + "') | float(0) < " + thresh +
           " and (as_timestamp(now()) - as_timestamp(states('" + RAIN_PAUSE_E + "'), as_timestamp(now()))) >= " + Math.round(restoreH * 3600) + " }}"
         ) ], then:[
           { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value:'' } },
           { action:'switch.turn_on', target:{ entity_id: sched } },
+        ]}] : []),
+        // two schedules: switch back on exactly the ones the rain rule paused
+        ...(useRestore && multi ? [{ if:[ tpl(
+          "{{ " + pauseSet + " and states('" + rain + "') | float(0) < " + thresh +
+          " and (as_timestamp(now()) - as_timestamp(" + pauseIso + ", as_timestamp(now()))) >= " + Math.round(restoreH * 3600) + " }}"
+        ) ], then:[
+          { variables:{ back: "{{ (" + pausedList + ") | select('is_state','off') | list }}" } },
+          { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value:'' } },
+          { if:[ tpl("{{ back | count > 0 }}") ], then:[ { action:'switch.turn_on', target:{ entity_id: "{{ back }}" } } ] },
         ]}] : []),
       ]},
     ];
@@ -683,7 +743,34 @@ class SprinklerDashCardV2 extends HTMLElement {
       { action:'switch.turn_off', target:{ entity_id: sws }, ...cont },
       ...alert('sprinkler_jojo', "Tank level {{ states('" + level + "') }}% stayed below " + lowPct + "% — all zones switched off. Scheduled runs stay blocked until it refills."),
     ]});
-    if (useRain) {
+    if (useRain && multi) {
+      const was = "(" + pausedList + ") if (" + pauseSet + ") else []";
+      branches.push({ conditions:[{ condition:'trigger', id:'rain_high' }], sequence:[
+        { variables:{ on_now: "{{ scheds | select('is_state','on') | list }}", was: "{{ " + was + " }}" } },
+        { if:[ tpl("{{ on_now | count > 0 }}") ], then:[
+          { action:'switch.turn_off', target:{ entity_id: "{{ on_now }}" } },
+          { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value: "{{ now().isoformat() ~ '|' ~ ((was + on_now) | unique | join(',')) }}" } },
+        ], else:[
+          // more rain while already paused: restart the countdown, keep the paused list
+          { if:[ tpl("{{ " + pauseSet + " }}") ], then:[
+            { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value: "{{ now().isoformat() ~ '|' ~ (was | join(',')) }}" } },
+          ]},
+        ]},
+      ]});
+      branches.push({ conditions:[{ condition:'trigger', id:'rain_more' }], sequence:[
+        tpl("{{ " + pauseSet +
+            " and trigger.to_state is not none and trigger.from_state is not none" +
+            " and (trigger.to_state.state | float(0)) > (trigger.from_state.state | float(0)) }}"),
+        { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value: "{{ now().isoformat() ~ '|' ~ ((" + pausedList + ") | join(',')) }}" } },
+      ]});
+      // one schedule switched on by hand: drop it from the pause; the other stays paused
+      branches.push({ conditions:[{ condition:'trigger', id:'sched_on' }], sequence:[
+        tpl("{{ " + pauseSet + " }}"),
+        { variables:{ rest: "{{ (" + pausedList + ") | reject('eq', trigger.entity_id) | list }}" } },
+        { action:'input_text.set_value', target:{ entity_id: RAIN_PAUSE_E }, data:{ value: "{{ (" + pauseIso + " ~ '|' ~ (rest | join(','))) if rest | count > 0 else '' }}" } },
+      ]});
+    }
+    if (useRain && !multi) {
       branches.push({ conditions:[{ condition:'trigger', id:'rain_high' }], sequence:[
         { if:[ { condition:'state', entity_id: sched, state:'on' } ], then:[
           { action:'switch.turn_off', target:{ entity_id: sched } },
@@ -714,11 +801,90 @@ class SprinklerDashCardV2 extends HTMLElement {
       mode: 'queued',
       max: 50,
       max_exceeded: 'silent',
-      variables: { zones: Z.map(z => ({ n:z.n, sw:z.sw, dur:z.dur, t:z.t, name:z.name })) },
+      variables: { zones: Z.map(z => ({ n:z.n, sw:z.sw, dur:z.dur, t:z.t, name:z.name })), ...(multi ? { scheds } : {}) },
       triggers,
       conditions: [],
       actions: [{ choose: branches }],
     };
+  }
+
+  // ── Schedule rows (1 or 2 independent Scheduler switches) ──────────
+  _schedRows() {
+    const c = this._cfg;
+    const rows = [{ n:1, e: c.schedule_entity || '', label: c.schedule_label || '' }];
+    if (c.schedule_entity_2) rows.push({ n:2, e: c.schedule_entity_2, label: c.schedule_label_2 || '' });
+    if (rows.length > 1) rows.forEach(r => { if (!r.label) r.label = 'Schedule ' + r.n; });
+    else if (!rows[0].label) rows[0].label = 'Schedule';
+    return rows;
+  }
+
+  _buildSchedules() {
+    const wrap = this.shadowRoot.getElementById('sched-wrap'); if (!wrap) return;
+    wrap.replaceChildren();
+    const rows = this._schedRows();
+    rows.forEach((row, ri) => {
+      const sec = document.createElement('div'); sec.className = 'sched-row' + (ri ? ' sched-row--2' : '');
+      const hdr = document.createElement('div'); hdr.className = 'sched-hdr';
+      const title = document.createElement('span'); title.className = 'sched-title'; title.textContent = row.label;
+      const tog = document.createElement('div'); tog.className = 'stoggle'; tog.id = 'sched-toggle-' + row.n;
+      tog.appendChild(Object.assign(document.createElement('div'), { className:'stoggle-thumb' }));
+      hdr.append(title, tog);
+      const body = document.createElement('div'); body.className = 'sched-body';
+      const days = document.createElement('div'); days.className = 'sched-days';
+      this._days.forEach((d, i) => {
+        const b = document.createElement('div'); b.className = 'sday'; b.id = 'sday-' + row.n + '-' + d; b.textContent = this._dayLabels[i];
+        b.addEventListener('click', () => this._toggleDay(row.e, d));
+        days.appendChild(b);
+      });
+      const tw = document.createElement('div'); tw.className = 'sched-time-wrap';
+      const time = document.createElement('div'); time.className = 'sched-time'; time.id = 'sched-time-' + row.n; time.textContent = '--:--';
+      const next = document.createElement('div'); next.className = 'sched-next'; next.id = 'sched-next-' + row.n; next.textContent = '—';
+      tw.append(time, next);
+      body.append(days, tw);
+      sec.append(hdr, body);
+      wrap.appendChild(sec);
+
+      tog.addEventListener('click', () => {
+        if (!row.e) return;
+        const isOn = this._hass.states[row.e]?.state === 'on';
+        this._confirm(row.label, (isOn ? 'Disable ' : 'Enable ') + row.label.toLowerCase() + '?', isOn ? 'confirm-btn--danger' : 'confirm-btn--ok')
+          .then(ok => { if (ok) this._svc('switch', isOn ? 'turn_off' : 'turn_on', { entity_id: row.e }); });
+      });
+      time.addEventListener('click', () => this._openTimePicker(row, time));
+    });
+  }
+
+  _openTimePicker(row, timeEl) {
+    if (this._editingTime || !row.e) return;
+    const r = this.shadowRoot;
+    this._editingTime = true;
+    const cur = timeEl.textContent.trim().match(/^\d\d:\d\d$/) ? timeEl.textContent.trim() : '06:00';
+    const [curH, curM] = cur.split(':').map(Number);
+    const modal = r.getElementById('time-picker-modal');
+    const hInp = r.getElementById('hour-input');
+    const mInp = r.getElementById('min-input');
+    r.querySelector('.time-picker-title').textContent = this._schedRows().length > 1 ? row.label + ' time' : 'Schedule Time';
+    hInp.value = String(curH).padStart(2,'0');
+    mInp.value = String(curM).padStart(2,'0');
+    modal.classList.add('time-picker-modal--open');
+    setTimeout(() => hInp.focus(), 100);
+    const step = (inp, max, delta) => { inp.value = String(Math.min(max, Math.max(0, (parseInt(inp.value) || 0) + delta))).padStart(2,'0'); };
+    const close = () => { this._editingTime = false; modal.classList.remove('time-picker-modal--open'); };
+    r.getElementById('hour-up').onclick = () => step(hInp, 23, 1);
+    r.getElementById('hour-down').onclick = () => step(hInp, 23, -1);
+    r.getElementById('min-up').onclick = () => step(mInp, 59, 1);
+    r.getElementById('min-down').onclick = () => step(mInp, 59, -1);
+    r.getElementById('time-picker-cancel').onclick = close;
+    r.getElementById('time-picker-save').onclick = () => {
+      close();
+      const h = Math.min(23, Math.max(0, parseInt(hInp.value) || 0));
+      const m = Math.min(59, Math.max(0, parseInt(mInp.value) || 0));
+      const val = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
+      timeEl.textContent = val;
+      if (val !== cur) this._saveTime(row.e, val);
+    };
+    hInp.oninput = () => { if ((parseInt(hInp.value) || 0) > 23) hInp.value = '23'; };
+    mInp.oninput = () => { if ((parseInt(mInp.value) || 0) > 59) mInp.value = '59'; };
   }
 
   _buildShell() {
@@ -755,6 +921,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     .hbtn--stop{background:rgba(210,45,45,0.9);color:#fff}
     .hbtn--start{background:rgba(255,255,255,0.92);color:#0a5c45}
     .zones{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:6px}
+    .zones--3 .zdur-btn{width:30px}
+    .zones--3 .ztop{gap:5px}
     .zone{border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);padding:8px 9px 7px;position:relative;overflow:hidden;transition:border-color .2s,background .2s}
     .zone::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:rgba(255,255,255,0.06);transition:background .2s}
     .zone--on{background:rgba(26,138,100,0.1);border-color:rgba(77,196,154,0.35)}
@@ -814,6 +982,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zdur-btn:active{transform:scale(0.93)}
     .sched-wrap{margin:0 6px 6px;border-radius:9px;border:1px solid rgba(255,255,255,0.07);background:rgba(255,255,255,0.03);overflow:hidden}
     .sched-hdr{display:flex;align-items:center;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,0.05)}
+    .sched-row--2{border-top:1px solid rgba(255,255,255,0.08)}
     .sched-title{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--primary-text-color,#f0f0f0);flex:1}
     .stoggle{position:relative;width:32px;height:18px;border-radius:9px;background:rgba(255,255,255,0.12);cursor:pointer;flex-shrink:0;transition:background .25s}
     .stoggle--on{background:#1a8a64}
@@ -994,19 +1163,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     </div>
     <div class="engine-banner" id="engine-banner" style="display:none"></div>
     <div class="zones" id="zones"></div>
-    <div class="sched-wrap">
-      <div class="sched-hdr">
-        <span class="sched-title">Schedule</span>
-        <div class="stoggle" id="sched-toggle"><div class="stoggle-thumb"></div></div>
-      </div>
-      <div class="sched-body">
-        <div class="sched-days" id="sched-days"></div>
-        <div class="sched-time-wrap">
-          <div class="sched-time" id="sched-time">--:--</div>
-          <div class="sched-next" id="sched-next">—</div>
-        </div>
-      </div>
-    </div>
+    <div class="sched-wrap" id="sched-wrap"></div>
     <div class="lastrun-modal" id="lastrun-modal">
       <div class="lastrun-box">
         <div class="lastrun-hdr">
@@ -1123,73 +1280,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     r.getElementById('lastrun-close').addEventListener('click', () => {
       r.getElementById('lastrun-modal').classList.remove('lastrun-modal--open');
     });
-    r.getElementById('sched-toggle').addEventListener('click', () => {
-      const e = this._cfg.schedule_entity; if (!e) return;
-      const isOn = this._hass.states[e]?.state==='on';
-      const msg = isOn ? 'Disable the irrigation schedule?' : 'Enable the irrigation schedule?';
-      const okClass = isOn ? 'confirm-btn--danger' : 'confirm-btn--ok';
-      this._confirm('Schedule', msg, okClass).then(ok => {
-        if (ok) this._svc('switch', isOn?'turn_off':'turn_on', {entity_id:e});
-      });
-    });
-    const daysEl = r.getElementById('sched-days');
-    this._days.forEach((d,i) => {
-      const btn = document.createElement('div');
-      btn.className='sday'; btn.id='sday-'+d; btn.textContent=this._dayLabels[i];
-      btn.addEventListener('click', ()=>this._toggleDay(d));
-      daysEl.appendChild(btn);
-    });
-    const timeEl = r.getElementById('sched-time');
-    timeEl.addEventListener('click', () => {
-      if (this._editingTime) return;
-      this._editingTime = true;
-      const cur = timeEl.textContent.trim() || '06:00';
-      const [curH, curM] = cur.split(':').map(Number);
-      
-      const modal = r.getElementById('time-picker-modal');
-      const hInp = r.getElementById('hour-input');
-      const mInp = r.getElementById('min-input');
-      
-      hInp.value = String(curH).padStart(2,'0');
-      mInp.value = String(curM).padStart(2,'0');
-      
-      modal.classList.add('time-picker-modal--open');
-      setTimeout(() => hInp.focus(), 100);
-      
-      const updateHour = (delta) => {
-        let v = Math.min(23, Math.max(0, parseInt(hInp.value||0) + delta));
-        hInp.value = String(v).padStart(2,'0');
-      };
-      const updateMin = (delta) => {
-        let v = Math.min(59, Math.max(0, parseInt(mInp.value||0) + delta));
-        mInp.value = String(v).padStart(2,'0');
-      };
-      
-      const save = () => {
-        this._editingTime = false;
-        modal.classList.remove('time-picker-modal--open');
-        const h = Math.min(23, Math.max(0, parseInt(hInp.value)||0));
-        const m = Math.min(59, Math.max(0, parseInt(mInp.value)||0));
-        const val = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0');
-        timeEl.textContent = val;
-        if (val !== cur) this._saveTime(val);
-      };
-      const cancel = () => {
-        this._editingTime = false;
-        modal.classList.remove('time-picker-modal--open');
-      };
-      
-      r.getElementById('hour-up').onclick = () => updateHour(1);
-      r.getElementById('hour-down').onclick = () => updateHour(-1);
-      r.getElementById('min-up').onclick = () => updateMin(1);
-      r.getElementById('min-down').onclick = () => updateMin(-1);
-      r.getElementById('time-picker-save').onclick = save;
-      r.getElementById('time-picker-cancel').onclick = cancel;
-      
-      hInp.onchange = mInp.onchange = () => {};
-      mInp.addEventListener('input', ()=>{let v=parseInt(mInp.value)||0;if(v>59)mInp.value='59';});
-      hInp.addEventListener('input', ()=>{let v=parseInt(hInp.value)||0;if(v>23)hInp.value='23';});
-    });
+    this._buildSchedules();
     r.getElementById('readme-close').addEventListener('click', () => {
       r.getElementById('readme-modal').classList.remove('readme-modal--open');
     });
@@ -1217,7 +1308,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const el=document.createElement('div'); el.className='zone'+(z.schedule_enabled===false?' zone--disabled':''); el.id='zone-'+i;
       const top=document.createElement('div'); top.className='ztop';
       const seq=document.createElement('div'); seq.className='zseq'; seq.id='zseq-'+i; seq.textContent=i+1;
-      const name=document.createElement('span'); name.className='zname'; name.textContent=z.name;
+      const name=document.createElement('span'); name.className='zname'; name.textContent=z.name; name.title=z.name;
       const skip=document.createElement('div'); skip.className='zskip'; skip.id='zskip-'+i;
       skip.title='Skip next scheduled run';
       const skipIcon=document.createElement('ha-icon'); skipIcon.setAttribute('icon','mdi:calendar-remove'); skip.appendChild(skipIcon);
@@ -1266,6 +1357,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       bm.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)-1));
       bp.addEventListener('click',()=>applyDur((parseFloat(di.value)||0)+1));
     });
+    this._layoutKey = null;
+    this._applyZoneLayout();
   }
 
   // entity search; the dropdown is absolutely positioned inside the shadow root
@@ -1350,6 +1443,57 @@ class SprinklerDashCardV2 extends HTMLElement {
     return wrap;
   }
 
+  // Second schedule: offered as an explicit, confirmed action. The card cannot pick it
+  // for itself (settings belong to the card editor), so afterwards it names the new switch.
+  _schedulesForScript() {
+    return Object.values(this._hass?.states || {}).filter(s =>
+      s.entity_id.startsWith('switch.schedule_') && (s.attributes?.entities || []).includes('script.sprinkler')).map(s => s.entity_id);
+  }
+
+  _renderSched2Box() {
+    const el = this.shadowRoot.getElementById('sched2-box'); if (!el) return;
+    el.replaceChildren();
+    const p = (t, cls) => { const d = document.createElement('div'); d.className = cls || 'eng-txt'; d.textContent = t; el.appendChild(d); return d; };
+    const btn = (t, cls, fn) => { const b = document.createElement('button'); b.className = 'eng-btn ' + (cls || ''); b.textContent = t; b.addEventListener('click', fn); return b; };
+    if (this._cfg.schedule_entity_2) { p('✓ ' + this._cfg.schedule_entity_2 + ' is used as schedule 2.', 'eng-txt eng-ok'); return; }
+    const known = this._schedulesForScript().filter(e => e !== this._cfg.schedule_entity);
+    if (known.length) {
+      p('Found ' + known.join(', ') + ' (also runs script.sprinkler). Select it as "Schedule 2 sw" in the card editor to show it here.');
+      return;
+    }
+    if (!this._hass.services?.scheduler?.add) { p('Install the Scheduler Component (HACS) to add a second schedule.', 'eng-sub'); return; }
+    if (this._sched2Msg) p(this._sched2Msg, this._sched2Msg.startsWith('✗') ? 'eng-txt eng-err' : 'eng-txt eng-ok');
+    if (!this._sched2Open) {
+      p('Water twice a day, or on different days at different times, with a second independent schedule.');
+      const row = document.createElement('div'); row.className = 'eng-row';
+      row.append(btn('Create second schedule…', 'eng-btn--go', () => { this._sched2Open = true; this._sched2Msg = ''; this._renderSched2Box(); }));
+      el.appendChild(row); return;
+    }
+    p('This will create a Scheduler schedule "Sprinkler Schedule 2" that runs script.sprinkler on Mon/Wed/Fri at 18:00. Change its days and time on the card afterwards.');
+    const row = document.createElement('div'); row.className = 'eng-row';
+    row.append(
+      btn('Confirm', 'eng-btn--go', async () => {
+        const before = new Set(this._schedulesForScript());
+        try {
+          await this._hass.callService('scheduler', 'add', {
+            weekdays: ['mon','wed','fri'],
+            timeslots: [{ start:'18:00:00', actions:[{ service:'script.turn_on', entity_id:'script.sprinkler' }] }],
+            name: 'Sprinkler Schedule 2',
+          });
+          this._sched2Msg = '✓ Created. Select the new switch as "Schedule 2 sw" in the card editor.';
+          setTimeout(() => {
+            const added = this._schedulesForScript().filter(e => !before.has(e));
+            if (added.length) this._sched2Msg = '✓ Created ' + added[0] + '. Select it as "Schedule 2 sw" in the card editor.';
+            this._renderSched2Box();
+          }, 2000);
+        } catch (e) { this._sched2Msg = '✗ ' + String(e?.message || e?.error || e); }
+        this._sched2Open = false; this._renderSched2Box();
+      }),
+      btn('Cancel', '', () => { this._sched2Open = false; this._renderSched2Box(); }),
+    );
+    el.appendChild(row);
+  }
+
   // card-side gear panel: setup only. Settings are edited in HA's card editor.
   _renderSetupPanel() {
     const panel = this.shadowRoot.getElementById('cfg-panel');
@@ -1374,6 +1518,10 @@ class SprinklerDashCardV2 extends HTMLElement {
     const l1=document.createElement('div'); l1.className='cfg-label'; l1.textContent='Home Assistant setup';
     const box=document.createElement('div'); box.className='engine-box'; box.id='engine-box';
     s1.append(l1, box);
+    const sS=document.createElement('div'); sS.className='cfg-section';
+    const lS=document.createElement('div'); lS.className='cfg-label'; lS.textContent='Second schedule';
+    const boxS=document.createElement('div'); boxS.className='engine-box'; boxS.id='sched2-box';
+    sS.append(lS, boxS);
     const s2=document.createElement('div'); s2.className='cfg-section';
     const l2=document.createElement('div'); l2.className='cfg-label'; l2.textContent='Settings';
     const n2=document.createElement('div'); n2.className='cfg-note';
@@ -1382,9 +1530,10 @@ class SprinklerDashCardV2 extends HTMLElement {
     const ver=document.createElement('div');
     ver.style.cssText='padding:10px;text-align:center;font-size:10px;color:var(--secondary-text-color,#888)';
     ver.textContent='Sprinkler Dash Card v'+CARD_VERSION;
-    body.append(s1, s2, ver);
+    body.append(s1, sS, s2, ver);
     panel.append(hdr, body);
     this._renderEngineUi();
+    this._renderSched2Box();
   }
 
   // full settings UI — rendered by the card editor (SprinklerDashCardV2Editor)
@@ -1548,13 +1697,34 @@ class SprinklerDashCardV2 extends HTMLElement {
     ntRow.append(ntLbl,ntInp); slist.appendChild(ntRow);
 
     // entity fields
-    [{label:'Rain sensor',key:'rain_sensor',val:this._cfg.rain_sensor||''},{label:'Weather',key:'weather_entity',val:this._cfg.weather_entity||''},{label:'Jojo sensor',key:'jojo_sensor',val:this._cfg.jojo_sensor||''},{label:'Jojo level %',key:'jojo_level_sensor',val:this._cfg.jojo_level_sensor||''},{label:'Schedule sw',key:'schedule_entity',val:this._cfg.schedule_entity||''}]
+    [{label:'Rain sensor',key:'rain_sensor',val:this._cfg.rain_sensor||''},{label:'Weather',key:'weather_entity',val:this._cfg.weather_entity||''},{label:'Jojo sensor',key:'jojo_sensor',val:this._cfg.jojo_sensor||''},{label:'Jojo level %',key:'jojo_level_sensor',val:this._cfg.jojo_level_sensor||''},{label:'Schedule sw',key:'schedule_entity',val:this._cfg.schedule_entity||''},{label:'Schedule 2 sw',key:'schedule_entity_2',val:this._cfg.schedule_entity_2||''}]
     .forEach(f=>{
       const row=document.createElement('div'); row.className='cfg-field-row';
       const lbl=document.createElement('label'); lbl.className='cfg-field-lbl'; lbl.textContent=f.label;
       const wrap=this._makeEntityInput(f.val,(val)=>{ this._saveConfig({[f.key]:val}); this._update(); });
       row.append(lbl,wrap); slist.appendChild(row);
     });
+
+    // schedule names (shown on the card when there are two schedules)
+    [['Sched 1 name','schedule_label','e.g. Morning'],['Sched 2 name','schedule_label_2','e.g. Evening']].forEach(([label,key,ph])=>{
+      const row=document.createElement('div'); row.className='cfg-field-row';
+      const lbl=document.createElement('label'); lbl.className='cfg-field-lbl'; lbl.textContent=label;
+      const inp=document.createElement('input'); inp.type='text'; inp.className='cfg-field-input'; inp.value=this._cfg[key]||''; inp.placeholder=ph;
+      inp.addEventListener('change',()=>this._saveConfig({[key]:inp.value.trim()}));
+      row.append(lbl,inp); slist.appendChild(row);
+    });
+    const schHint=document.createElement('div'); schHint.className='cfg-note'; schHint.style.cssText='font-size:10px;margin:-2px 0 2px 78px';
+    schHint.textContent='Schedule 2 is optional: a second Scheduler switch with its own days and time (e.g. evenings). Both run the zones ticked for the schedule. Create one from the gear panel on the card.';
+    slist.appendChild(schHint);
+
+    // zone grid columns
+    const colRow=document.createElement('div'); colRow.className='cfg-field-row';
+    const colLbl=document.createElement('label'); colLbl.className='cfg-field-lbl'; colLbl.textContent='Zone columns';
+    const colSel=document.createElement('select'); colSel.className='cfg-field-input';
+    [['auto','Auto (3 on wide cards when it fits)'],['2','2'],['3','3']].forEach(([v,t])=>{ const o=document.createElement('option'); o.value=v; o.textContent=t; colSel.appendChild(o); });
+    colSel.value=String(this._cfg.zone_columns||'auto');
+    colSel.addEventListener('change',()=>this._saveConfig({zone_columns:colSel.value}));
+    colRow.append(colLbl,colSel); slist.appendChild(colRow);
     s3.append(l3,slist);
 
     // ── Info bar slots ──
@@ -1631,7 +1801,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       {
         key:'rain_disable_schedule',
         title:'Rain: Auto-disable schedule',
-        desc:`If rain sensor exceeds ${this._cfg.rain_threshold||5}mm, the schedule switch is automatically turned off. Rain value turns yellow in info bar.`,
+        desc:`If rain sensor exceeds ${this._cfg.rain_threshold||5}mm, the schedule is switched off (both, if you use two). Rain value turns yellow in info bar.`,
       },
       {
         key:'rain_auto_restore',
@@ -1695,7 +1865,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       },
       {
         key:'rain_disable_schedule',
-        desc:`If rain sensor exceeds ${this._cfg.rain_threshold||5}mm, the schedule switch is automatically turned off. Rain value turns yellow in info bar.`
+        desc:`If rain sensor exceeds ${this._cfg.rain_threshold||5}mm, the schedule is switched off (both, if you use two). Rain value turns yellow in info bar.`
       },
       {
         key:'rain_auto_restore',
@@ -2004,15 +2174,15 @@ class SprinklerDashCardV2 extends HTMLElement {
     return Math.floor(diffHour / 24) + 'd ago';
   }
 
-  _toggleDay(day) {
-    const e=this._cfg.schedule_entity; if(!e)return;
+  _toggleDay(e, day) {
+    if (!e) return;
     const cur=this._hass.states[e]?.attributes?.weekdays||[];
     const next=cur.includes(day)?cur.filter(d=>d!==day):[...cur,day];
     this._svc('scheduler','edit',{entity_id:e,weekdays:next});
   }
 
-  _saveTime(ts) {
-    const e=this._cfg.schedule_entity; if(!e)return;
+  _saveTime(e, ts) {
+    if (!e) return;
     this._svc('scheduler','edit',{entity_id:e,timeslots:[{start:ts+':00',actions:[{service:'script.turn_on',entity_id:'script.sprinkler'}]}]});
   }
 
@@ -2166,45 +2336,56 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._renderProgress(i, isOn, total && rem!==null ? total-rem : 0, total, this._isZoneSkipped(z), rem, qpos);
   }
 
+  // rain pause value: "ISO" (one schedule) or "ISO|switch.a,switch.b" (two schedules)
+  _rainPause() {
+    const rp = this._hass.states[RAIN_PAUSE_E]?.state || '';
+    const [iso, list] = rp.split('|');
+    const ms = Date.parse(iso);
+    if (!rp || isNaN(ms)) return null;
+    return { ms, paused: list !== undefined ? list.split(',').filter(Boolean) : [this._schedEntities()[0]] };
+  }
+
   _updateSchedule() {
     if(!this._built)return;
-    const e=this._cfg.schedule_entity; if(!e||!this._hass.states[e])return;
-    const ent=this._hass.states[e], isOn=ent.state==='on'||ent.state==='triggered', attrs=ent.attributes||{};
-    const tog=this.shadowRoot.getElementById('sched-toggle'); if(tog)tog.className='stoggle'+(isOn?' stoggle--on':'');
-    this._days.forEach(d=>{ const el=this.shadowRoot.getElementById('sday-'+d); if(el)el.className='sday'+((attrs.weekdays||[]).includes(d)?' sday--on':''); });
-    const timeEl=this.shadowRoot.getElementById('sched-time');
-    if(timeEl&&!this._editingTime){ const t=(attrs.timeslots||[])[0]||''; timeEl.textContent=(typeof t==='string'?t:(t.start||'')).substring(0,5)||'--:--'; }
-    const nextEl=this.shadowRoot.getElementById('sched-next');
-    if(!nextEl) return;
-    // rain pause set by the controller automation
-    const rp=this._hass.states[RAIN_PAUSE_E]?.state||'';
-    const rpMs=Date.parse(rp);
-    if(!isOn && rp && !isNaN(rpMs)){
-      if(this._cfg.rules?.rain_auto_restore===false){ nextEl.textContent='paused by rain 🌧'; }
-      else {
-        const left=rpMs+(parseFloat(this._cfg.rain_restore_hours)||48)*3600000-Date.now();
-        const sinceRain=Date.now()-rpMs;
-        if(sinceRain<15*60000){ nextEl.textContent='raining 🌧 · resumes '+(parseFloat(this._cfg.rain_restore_hours)||48)+'h after it stops'; }
-        else if(left>0){ const h=Math.floor(left/3600000),m=Math.floor((left%3600000)/60000); nextEl.textContent='rain pause · resumes in '+h+'h '+m+'m'; }
-        else nextEl.textContent='rain pause · resumes when dry 🌤';
+    const pause = this._rainPause();
+    const restoreH = parseFloat(this._cfg.rain_restore_hours)||48;
+    this._schedRows().forEach(row => {
+      const e=row.e, n=row.n;
+      if(!e||!this._hass.states[e])return;
+      const ent=this._hass.states[e], isOn=ent.state==='on'||ent.state==='triggered', attrs=ent.attributes||{};
+      const tog=this.shadowRoot.getElementById('sched-toggle-'+n); if(tog)tog.className='stoggle'+(isOn?' stoggle--on':'');
+      this._days.forEach(d=>{ const el=this.shadowRoot.getElementById('sday-'+n+'-'+d); if(el)el.className='sday'+((attrs.weekdays||[]).includes(d)?' sday--on':''); });
+      const timeEl=this.shadowRoot.getElementById('sched-time-'+n);
+      if(timeEl&&!this._editingTime){ const t=(attrs.timeslots||[])[0]||''; timeEl.textContent=(typeof t==='string'?t:(t.start||'')).substring(0,5)||'--:--'; }
+      const nextEl=this.shadowRoot.getElementById('sched-next-'+n);
+      if(!nextEl) return;
+      // rain pause set by the controller automation
+      if(!isOn && pause && pause.paused.includes(e)){
+        if(this._cfg.rules?.rain_auto_restore===false){ nextEl.textContent='paused by rain 🌧'; }
+        else {
+          const left=pause.ms+restoreH*3600000-Date.now();
+          if(Date.now()-pause.ms<15*60000){ nextEl.textContent='raining 🌧 · resumes '+restoreH+'h after it stops'; }
+          else if(left>0){ const h=Math.floor(left/3600000),m=Math.floor((left%3600000)/60000); nextEl.textContent='rain pause · resumes in '+h+'h '+m+'m'; }
+          else nextEl.textContent='rain pause · resumes when dry 🌤';
+        }
+        nextEl.className='sched-next'; nextEl.style.color='#ffcc44';
+        return;
       }
-      nextEl.className='sched-next'; nextEl.style.color='#ffcc44';
-      return;
-    }
-    nextEl.style.color='';
-    if(!attrs.next_trigger){ nextEl.textContent=isOn?'—':'disabled'; nextEl.className='sched-next'; return; }
-    const d=new Date(attrs.next_trigger),now=new Date(),diff=d-now;
-    const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000);
-    const timeStr=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false});
-    const tomorrowDate=new Date(now.getTime()+86400000).toDateString();
-    let label;
-    if(diff<0) label='overdue';
-    else if(h<1) label='in '+m+'m';
-    else if(h<24) label='in '+h+'h '+(m>0?m+'m':'');
-    else if(d.toDateString()===tomorrowDate) label='Tomorrow '+timeStr;
-    else label=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+timeStr;
-    nextEl.textContent=isOn?'next: '+label:'disabled';
-    nextEl.className='sched-next'+(isOn?' sched-next--on':'');
+      nextEl.style.color='';
+      if(!attrs.next_trigger){ nextEl.textContent=isOn?'—':'disabled'; nextEl.className='sched-next'; return; }
+      const d=new Date(attrs.next_trigger),now=new Date(),diff=d-now;
+      const h=Math.floor(diff/3600000),m=Math.floor((diff%3600000)/60000);
+      const timeStr=d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',hour12:false});
+      const tomorrowDate=new Date(now.getTime()+86400000).toDateString();
+      let label;
+      if(diff<0) label='overdue';
+      else if(h<1) label='in '+m+'m';
+      else if(h<24) label='in '+h+'h '+(m>0?m+'m':'');
+      else if(d.toDateString()===tomorrowDate) label='Tomorrow '+timeStr;
+      else label=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d.getDay()]+' '+timeStr;
+      nextEl.textContent=isOn?'next: '+label:'disabled';
+      nextEl.className='sched-next'+(isOn?' sched-next--on':'');
+    });
   }
 
   _renderProgress(i,isOn,elapsed,total,skipped,rem=null,qpos=-1){

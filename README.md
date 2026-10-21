@@ -1,8 +1,10 @@
-# 💧 Sprinkler Dash Card
+<p align="center"><img src="logo.png" alt="Sprinkler Dash Card" width="128"></p>
+
+<h1 align="center">Sprinkler Dash Card</h1>
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, configure it in the card editor, and press **Set up** once to create the script and automation that do the watering.
 
-![Version](https://img.shields.io/badge/version-v3.1.1-green)
+![Version](https://img.shields.io/badge/version-v3.2.0-green)
 ![HACS](https://img.shields.io/badge/HACS-Default-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
@@ -24,6 +26,10 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 | Set up — review before anything is created | Setup panel (⚙️) |
 |---|---|
 | ![Set up](Sprinkler_Setup.png) | ![Setup panel](Sprinkler_Setup_Done.png) |
+
+| Wide card — 9 zones as 3×3 | Two schedules (morning + evening) |
+|---|---|
+| ![Wide card](Sprinkler_Wide.png) | ![Two schedules](Sprinkler_TwoSchedules.png) |
 
 | Card Editor |
 |---|
@@ -47,7 +53,8 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 - Closing the dashboard, switching views, or a phone going to sleep can no longer leave a zone running
 
 **Zone control**
-- Up to 12 configurable zones — 2-column grid with toggle, progress bar, countdown timer, and 1-minute adjustable duration
+- Up to 12 configurable zones with toggle, progress bar, countdown timer, and 1-minute adjustable duration
+- Smart grid — 3 columns on wide cards when the zone count suits it (9 zones = 3×3), 2 on phones; the last row always stretches, so odd counts never leave a gap. Or pick 2 / 3 columns yourself
 - Zone expand popup — tap any zone tile to open a large overlay with big +/− duration buttons, status, last activity, and a **Manual Run** button
 - Manual Run auto-stop — pick a duration for this run only (the scheduled duration is not changed); the zone's HA timer closes the valve, even if the browser is closed or HA restarts
 - Zone last-run badge — shows "last: Xm/Xh/Xd ago" on each tile
@@ -57,6 +64,7 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 
 **Schedule management**
 - Built-in scheduler section — enable/disable, set run days, set run time with mobile-friendly HH/MM editor
+- Optional **second schedule** with its own days and time — water morning and evening, or on different days at different times. Name them (e.g. *Morning* / *Evening*); rain pauses and restores each one, and a run that is still going is never restarted by the other schedule
 - Smart next-run countdown — shows "Tonight 22:00", "Tomorrow 06:00", or "in 3h 45m"
 - Start Schedule button — manually triggers the full zone sequence
 - Stop Schedule button — clears the run queue and closes all valves (with confirmation)
@@ -196,6 +204,9 @@ Set up (Step 8) can create a schedule for `script.sprinkler` for you. Adjust the
 | Jojo sensor | Water tank litres sensor |
 | Jojo low % | Tank % below which all zones shut off immediately |
 | Schedule switch | The `switch.schedule_*` entity from Scheduler |
+| Schedule 2 switch | Optional second schedule (create one from the ⚙️ gear on the card) |
+| Sched 1 / 2 name | Names shown on the card when there are two schedules, e.g. Morning / Evening |
+| Zone columns | Auto (default), 2 or 3 |
 | Notify | Optional notify service for tank-low / stuck-valve alerts |
 
 ---
@@ -265,6 +276,7 @@ Tap **Last Run** to see what happened during the most recent scheduled run.
 
 | Version | Changes |
 |---|---|
+| v3.2.0 | **NEW: second schedule** — an optional second Scheduler switch with its own days and time (e.g. morning + evening), named on the card, created from the ⚙️ gear. Rain pause/restore handles both and only restores the schedules it paused; a run in progress is never restarted by the other schedule. **NEW: smart zone grid** — 3 columns on wide cards when it suits the count (9 → 3×3), last row stretches so odd counts leave no gap; Zone columns setting (Auto/2/3). New logo. Single-schedule setups are unchanged (no update needed). |
 | v3.1.1 | **Security (HACS review):** the Last Run popup and zone popup are now built with DOM nodes and `textContent` instead of `innerHTML`, so zone names and entries in `input_text.sprinkler_manual_log` (which any user or automation can set) can never inject markup into an admin's browser. Manual-log entries are also validated on load (malformed entries are ignored). |
 | v3.1.0 | **Changes from the HACS default-store review.** (1) The card no longer changes Home Assistant configuration just by being displayed: helpers, timers, `script.sprinkler`, the controller automation and the Scheduler entity are created only through an explicit admin **Set up…** that lists what it will do and waits for **Confirm**. It only updates scripts/automations carrying its *Auto-generated by Sprinkler Dash Card* marker, refuses if `script.sprinkler` or the controller id belongs to something else, and never modifies existing helpers or timers. (2) Settings moved to a real visual card editor (`config-changed`), so Home Assistant saves them into the card being edited — previously they were written into the first sprinkler card on the default dashboard. The ⚙️ gear on the card now holds setup only. (3) No more author-specific defaults: a new card starts with empty entity ids and generic zone names, pre-filled from entities found on your system. Existing cards keep working unchanged. |
 | v3.0.5 | **FIX:** Zones no longer run in parallel when a Sonoff bounces on→off→on at switch-on. |
