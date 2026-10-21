@@ -3,7 +3,7 @@
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, configure it in the card editor, and press **Set up** once to create the script and automation that do the watering.
 
 ![Version](https://img.shields.io/badge/version-v3.1.1-green)
-![HACS](https://img.shields.io/badge/HACS-Default-orange)
+![HACS](https://img.shields.io/badge/HACS-Custom-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
 
@@ -17,17 +17,17 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 
 ## Screenshots
 
-| Main Card | Zones & Info Bar | Schedule |
+| Main Card | Skip Next Run | Zone Popup |
 |---|---|---|
-| ![Main](Sprinkler1.png) | ![Zones](Sprinkler2.png) | ![Schedule](Sprinkler3.png) |
+| ![Main](Sprinkler1.png) | ![Skip Next Run](Sprinkler_exclude_next_run.png) | ![Zone Popup](Sprinkler4.png) |
 
-| Skip Next Run | Zone Expand Popup | Settings — General |
-|---|---|---|
-| ![Skip Next Run](Sprinkler_exclude_next_run.png) | ![Zone Expand](Sprinkler4.png) | ![Settings 1](Sprinkler_Settings1.png) |
+| Set up — review before anything is created | Setup panel (⚙️) |
+|---|---|
+| ![Set up](Sprinkler_Setup.png) | ![Setup panel](Sprinkler_Setup_Done.png) |
 
-| Settings — Rules & Info Bar |
+| Card Editor |
 |---|
-| ![Settings 2](Sprinkler_Settings2.png) |
+| ![Card editor](Sprinkler_Editor.png) |
 
 ---
 
