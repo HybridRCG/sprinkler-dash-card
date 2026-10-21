@@ -3,7 +3,7 @@
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, configure it in the card editor, and press **Set up** once to create the script and automation that do the watering.
 
 ![Version](https://img.shields.io/badge/version-v3.1.1-green)
-![HACS](https://img.shields.io/badge/HACS-Custom-orange)
+![HACS](https://img.shields.io/badge/HACS-Default-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
 
@@ -98,24 +98,28 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 
 ## Installation
 
-### Option 1: HACS Custom Repository (Recommended - Takes 30 seconds)
+### Option 1: HACS (Recommended)
 
-1. **Open HACS** in Home Assistant
-2. Click **Frontend** in the sidebar
-3. Click the **⋮ (three dots)** in the top right corner
-4. Select **"Custom repositories"**
-5. Paste this URL: `https://github.com/HybridRCG/sprinkler-dash-card`
-6. Select **"Lovelace"** as the category
-7. Click **"Create"**
-8. The card should now appear in HACS — click **Install**
-9. **Hard refresh** your browser (Ctrl+Shift+R on Windows, Cmd+Shift+R on Mac, or open DevTools and long-press refresh)
+Sprinkler Dash Card is in the HACS default store.
 
-**That's it!** You're done. Go to any dashboard and add the card with:
+1. Open **HACS** in Home Assistant
+2. Search for **Sprinkler Dash Card**
+3. Click **Download**
+4. **Hard refresh** your browser (Ctrl+Shift+R on Windows, Cmd+Shift+R on Mac)
+
+Then add the card from the dashboard card picker, or with:
 ```yaml
 type: custom:sprinkler-dash-card-v2
 ```
 
-> **Note:** The card is pending approval for the HACS default store. Once approved, you'll be able to search and install directly without adding a custom repository. For now, custom repository is the fastest way to get started.
+<details>
+<summary>Card not showing up in the HACS search? Add it as a custom repository</summary>
+
+1. In HACS, click the **⋮** menu (top right) → **Custom repositories**
+2. Paste `https://github.com/HybridRCG/sprinkler-dash-card`, select **Dashboard** as the type, and click **Add**
+3. Search for **Sprinkler Dash Card** and click **Download**
+
+</details>
 
 ### Option 2: Manual Installation
 
