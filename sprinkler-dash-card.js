@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.2.0';
+const CARD_VERSION = '3.2.1';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -472,6 +472,7 @@ class SprinklerDashCardV2 extends HTMLElement {
           weekdays: ['mon','wed','fri'],
           timeslots: [{ start:'06:00:00', actions:[{ service:'script.turn_on', entity_id:'script.sprinkler' }] }],
           name: 'Sprinkler Scheduler',
+          repeat_type: 'repeat',   // required by Scheduler Component: keep firing every week
         });
       }
       this._engineMsg = '✓ Done.' + (withSched && plan.sched ? ' Select the new switch.schedule_… entity as "Schedule sw" in the card editor.' : '');
@@ -1479,6 +1480,7 @@ class SprinklerDashCardV2 extends HTMLElement {
             weekdays: ['mon','wed','fri'],
             timeslots: [{ start:'18:00:00', actions:[{ service:'script.turn_on', entity_id:'script.sprinkler' }] }],
             name: 'Sprinkler Schedule 2',
+            repeat_type: 'repeat',   // required by Scheduler Component: keep firing every week
           });
           this._sched2Msg = '✓ Created. Select the new switch as "Schedule 2 sw" in the card editor.';
           setTimeout(() => {
