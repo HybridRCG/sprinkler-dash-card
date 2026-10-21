@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.3.0';
+const CARD_VERSION = '3.3.1';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -181,12 +181,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     const running = this._isRunActive();
     if (running !== this._lastRunning) {
       this._lastRunning = running;
-      const stopBtn = this.shadowRoot.getElementById('btn-stop-sched');
-      const startBtn = this.shadowRoot.getElementById('btn-start');
-      if (stopBtn && startBtn) {
-        stopBtn.style.display = running ? '' : 'none';
-        startBtn.style.display = running ? 'none' : '';
-      }
+      this._layoutHeaderButtons();
     }
     if (prevHass && prevHass.states[MANUAL_LOG_E]?.state !== hass.states[MANUAL_LOG_E]?.state) this._loadManualLog();
 
@@ -282,18 +277,41 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
   }
 
-  _startSchedule() {
-    if (!this._hass.states['script.sprinkler'] || !this._hass.states[QUEUE_E]) {
+  _startSchedule(n = 1) {
+    const two = n === 2 && this._schedEntities().length > 1;
+    const script = two ? 'script.' + SCRIPT2 : 'script.sprinkler';
+    if (!this._hass.states[script] || !this._hass.states[QUEUE_E]) {
       this._toast(this._hass.user?.is_admin
-        ? 'Sprinklers are not set up yet: tap the gear icon on the card and run Set up.'
+        ? 'Not set up yet: tap the gear icon on the card and run Set up' + (two ? ' (Review update…)' : '') + '.'
         : 'Sprinklers are not set up yet: ask an admin to run Set up from the card.');
       return;
     }
-    this._confirm('Start Schedule', 'Run all scheduled zones now?').then(ok => {
+    const rows = this._schedRows();
+    const title = rows.length > 1 ? 'Start ' + rows[two ? 1 : 0].label : 'Start Schedule';
+    const msg = rows.length > 1 ? 'Run the scheduled zones now with the ' + rows[two ? 1 : 0].label.toLowerCase() + ' minutes?' : 'Run all scheduled zones now?';
+    this._confirm(title, msg).then(ok => {
       if (!ok) return;
-      this._svc('script','turn_on',{entity_id:'script.sprinkler'});
+      this._svc('script','turn_on',{entity_id:script});
     });
   }
+
+  // header: [Start | Last Run], or [Start 1 | Start 2 | Last Run] with two schedules;
+  // while a run is going the start button(s) become one Stop
+  _layoutHeaderButtons() {
+    const r = this.shadowRoot; if (!r) return;
+    const wrap = r.getElementById('hdr-btns'); if (!wrap) return;
+    const rows = this._schedRows(), two = rows.length > 1, running = !!this._lastRunning;
+    wrap.classList.toggle('hdr-btns--3', two);
+    wrap.classList.toggle('hdr-btns--running', running);
+    r.getElementById('btn-start').style.display = running ? 'none' : '';
+    r.getElementById('btn-start-2').style.display = (two && !running) ? '' : 'none';
+    r.getElementById('btn-stop-sched').style.display = running ? '' : 'none';
+    r.getElementById('btn-start-lbl').textContent = two ? rows[0].label : 'Start Schedule';
+    r.getElementById('btn-start-2-lbl').textContent = two ? rows[1].label : '';
+    r.getElementById('btn-start').title = two ? 'Start ' + rows[0].label.toLowerCase() + ' now' : 'Start schedule now';
+    r.getElementById('btn-start-2').title = two ? 'Start ' + rows[1].label.toLowerCase() + ' now' : '';
+  }
+
 
   // ── Engine ────────────────────────────────────────────────────────
 
@@ -892,16 +910,23 @@ class SprinklerDashCardV2 extends HTMLElement {
   }
 
   // ── Schedule rows (1 or 2 independent Scheduler switches) ──────────
+  // labels come from the Scheduler switches' own names (Scheduler prefixes them with "Scheduler ")
+  _schedName(e) {
+    const fn = String(this._hass?.states[e]?.attributes?.friendly_name || '').trim();
+    return fn.replace(/^scheduler\s+/i, '').trim();
+  }
+
   _schedRows() {
     const c = this._cfg;
     const rows = [{ n:1, e: c.schedule_entity || '', label: c.schedule_label || '' }];
     if (c.schedule_entity_2) rows.push({ n:2, e: c.schedule_entity_2, label: c.schedule_label_2 || '' });
-    if (rows.length > 1) rows.forEach(r => { if (!r.label) r.label = 'Schedule ' + r.n; });
+    if (rows.length > 1) rows.forEach(r => { if (!r.label) r.label = this._schedName(r.e) || ('Schedule ' + r.n); });
     else if (!rows[0].label) rows[0].label = 'Schedule';
     return rows;
   }
 
   _buildSchedules() {
+    this._layoutHeaderButtons();
     const wrap = this.shadowRoot.getElementById('sched-wrap'); if (!wrap) return;
     wrap.replaceChildren();
     const rows = this._schedRows();
@@ -999,6 +1024,10 @@ class SprinklerDashCardV2 extends HTMLElement {
     .hdr-meta-item{display:flex;align-items:center;gap:4px;font-size:12px;font-weight:500;color:#fff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;background:rgba(0,0,0,0.18);border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:3px 7px;cursor:pointer;transition:background .15s}
     .hdr-meta-item:hover{background:rgba(0,0,0,0.32);border-color:rgba(255,255,255,0.25)}
     .hdr-btns{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    .hdr-btns--3{grid-template-columns:1fr 1fr 1fr}
+    .hdr-btns--3.hdr-btns--running .hbtn--stop-sched{grid-column:span 2}
+    .hbtn-lbl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+    .hbtn{min-width:0}
     .hbtn{display:flex;align-items:center;justify-content:center;gap:5px;padding:8px 10px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;transition:opacity .15s,transform .1s}
     .hbtn:active{transform:scale(0.97);opacity:.8}
     .hbtn--stop{background:rgba(210,45,45,0.9);color:#fff}
@@ -1234,9 +1263,12 @@ class SprinklerDashCardV2 extends HTMLElement {
         </div>
       </div>
       <div class="hdr-meta" id="hdr-meta"></div>
-      <div class="hdr-btns">
+      <div class="hdr-btns" id="hdr-btns">
         <button class="hbtn hbtn--start" id="btn-start">
-          <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>Start Schedule
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg><span class="hbtn-lbl" id="btn-start-lbl">Start Schedule</span>
+        </button>
+        <button class="hbtn hbtn--start" id="btn-start-2" style="display:none">
+          <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg><span class="hbtn-lbl" id="btn-start-2-lbl">Schedule 2</span>
         </button>
         <button class="hbtn hbtn--stop-sched" id="btn-stop-sched" style="display:none">
           <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>Stop Schedule
@@ -1359,7 +1391,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       r.getElementById('cfg-panel').classList.toggle('cfg-panel--open', this._showConfig);
       if (this._showConfig) this._renderSetupPanel();
     });
-    r.getElementById('btn-start').addEventListener('click', () => this._startSchedule());
+    r.getElementById('btn-start').addEventListener('click', () => this._startSchedule(1));
+    r.getElementById('btn-start-2').addEventListener('click', () => this._startSchedule(2));
     r.getElementById('btn-stop-sched').addEventListener('click', () => this._stopSchedule());
     r.getElementById('btn-lastrun').addEventListener('click', () => this._showLastRun());
     r.getElementById('lastrun-close').addEventListener('click', () => {
@@ -1793,16 +1826,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       row.append(lbl,wrap); slist.appendChild(row);
     });
 
-    // schedule names (shown on the card when there are two schedules)
-    [['Sched 1 name','schedule_label','e.g. Morning'],['Sched 2 name','schedule_label_2','e.g. Evening']].forEach(([label,key,ph])=>{
-      const row=document.createElement('div'); row.className='cfg-field-row';
-      const lbl=document.createElement('label'); lbl.className='cfg-field-lbl'; lbl.textContent=label;
-      const inp=document.createElement('input'); inp.type='text'; inp.className='cfg-field-input'; inp.value=this._cfg[key]||''; inp.placeholder=ph;
-      inp.addEventListener('change',()=>this._saveConfig({[key]:inp.value.trim()}));
-      row.append(lbl,inp); slist.appendChild(row);
-    });
     const schHint=document.createElement('div'); schHint.className='cfg-note'; schHint.style.cssText='font-size:10px;margin:-2px 0 2px 78px';
-    schHint.textContent='Schedule 2 is optional: a second Scheduler switch with its own days and time (e.g. evenings). Both run the zones ticked for the schedule. Create one from the gear panel on the card.';
+    schHint.textContent='Schedule 2 is optional: a second Scheduler switch with its own days, time and minutes per zone. Create one from the gear panel on the card. The card shows each schedule under its Scheduler name.';
     slist.appendChild(schHint);
 
     // zone grid columns
@@ -2095,9 +2120,10 @@ class SprinklerDashCardV2 extends HTMLElement {
         row.append(
           mk('−', 'rgba(255,255,255,0.1)', '#fff', () => { v2 = Math.max(0, (v2 === undefined ? scheduledDur : v2) - 1); paint(); save(); }),
           mk('+', 'rgba(125,184,232,0.35)', '#fff', () => { v2 = Math.min(60, (v2 === undefined ? scheduledDur : v2) + 1); paint(); save(); }),
+          mk('Skip', 'rgba(255,180,60,0.18)', '#ffb43c', () => { v2 = 0; paint(); save(); }),
           mk('Same', 'rgba(255,255,255,0.06)', 'var(--secondary-text-color,#bbb)', () => { v2 = undefined; paint(); save(); }),
         );
-        row.lastChild.style.fontSize = '12px';
+        [...row.children].slice(2).forEach(b => { b.style.fontSize = '12px'; });
         d2Section.append(show, sub, row);
       }
     }
@@ -2491,6 +2517,8 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _updateSchedule() {
     if(!this._built)return;
+    const titles = this.shadowRoot.querySelectorAll('.sched-title');
+    this._schedRows().forEach((row, i) => { if (titles[i] && titles[i].textContent !== row.label) { titles[i].textContent = row.label; this._layoutHeaderButtons(); } });
     const pause = this._rainPause();
     const restoreH = parseFloat(this._cfg.rain_restore_hours)||48;
     this._schedRows().forEach(row => {

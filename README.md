@@ -4,7 +4,7 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, configure it in the card editor, and press **Set up** once to create the script and automation that do the watering.
 
-![Version](https://img.shields.io/badge/version-v3.3.0-green)
+![Version](https://img.shields.io/badge/version-v3.3.1-green)
 ![HACS](https://img.shields.io/badge/HACS-Default-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
@@ -64,8 +64,8 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 
 **Schedule management**
 - Built-in scheduler section — enable/disable, set run days, set run time with mobile-friendly HH/MM editor
-- Optional **second schedule** with its own days and time — water morning and evening, or on different days at different times. Name them (e.g. *Morning* / *Evening*); rain pauses and restores each one, and a run that is still going is never restarted by the other schedule
-- **Own minutes per zone for schedule 2** — tap a zone and set its *Evening duration* (or leave it at *Same* as schedule 1). Set a zone to **0** to skip it on schedule 2, so each schedule can water different zones. Each tile shows the schedule-2 minutes; changes apply immediately, no update needed
+- Optional **second schedule** with its own days and time — water morning and evening, or on different days at different times. The card shows each under its Scheduler name (rename a schedule in Scheduler and the card follows). With two schedules the header has one Start button per schedule plus Last Run, all the same width; rain pauses and restores each one, and a run that is still going is never restarted by the other schedule
+- **Own minutes per zone for schedule 2** — tap a zone and set its *Evening duration* (or leave it at *Same* as schedule 1). Press **Skip** (or set it to 0) to skip a zone on schedule 2, so each schedule can water different zones. Each tile shows the schedule-2 minutes; changes apply immediately, no update needed
 - Smart next-run countdown — shows "Tonight 22:00", "Tomorrow 06:00", or "in 3h 45m"
 - Start Schedule button — manually triggers the full zone sequence
 - Stop Schedule button — clears the run queue and closes all valves (with confirmation)
@@ -206,7 +206,6 @@ Set up (Step 8) can create a schedule for `script.sprinkler` for you. Adjust the
 | Jojo low % | Tank % below which all zones shut off immediately |
 | Schedule switch | The `switch.schedule_*` entity from Scheduler |
 | Schedule 2 switch | Optional second schedule (create one from the ⚙️ gear on the card). Per-zone minutes for it are set in each zone's popup |
-| Sched 1 / 2 name | Names shown on the card when there are two schedules, e.g. Morning / Evening |
 | Zone columns | Auto (default), 2 or 3 |
 | Notify | Optional notify service for tank-low / stuck-valve alerts |
 
@@ -277,6 +276,7 @@ Tap **Last Run** to see what happened during the most recent scheduled run.
 
 | Version | Changes |
 |---|---|
+| v3.3.1 | With two schedules the header shows **one Start button per schedule** plus Last Run, all equal width (a running schedule turns them into one Stop). Schedule names now come from the **Scheduler switches' own names** (the editor name fields are gone). **Skip** button for schedule-2 minutes in the zone popup. |
 | v3.3.0 | **NEW: schedule 2 has its own minutes per zone.** Set them in each zone's popup (*Same* = use schedule-1 minutes, *0* = skip that zone on schedule 2); the tile shows them. Stored in one helper (`input_text.sprinkler_durations_2`) keyed by zone, so values follow a zone when you reorder. Schedule 2 runs its own `script.sprinkler_2`; Set up creates it plus the helper and points schedule 2 at it (days/times kept). Last Run shows which schedule ran and compares against that schedule's minutes. Also: the card now tells HA how it sizes in sections layouts (no more "does not fully support resizing" note). Single-schedule setups are unchanged. |
 | v3.2.1 | **FIX:** Creating a schedule (Set up, and Create second schedule) failed with "required key not provided at 'repeat_type'" — the card now sends `repeat_type: repeat`, which current Scheduler Component versions require. |
 | v3.2.0 | **NEW: second schedule** — an optional second Scheduler switch with its own days and time (e.g. morning + evening), named on the card, created from the ⚙️ gear. Rain pause/restore handles both and only restores the schedules it paused; a run in progress is never restarted by the other schedule. **NEW: smart zone grid** — 3 columns on wide cards when it suits the count (9 → 3×3), last row stretches so odd counts leave no gap; Zone columns setting (Auto/2/3). New logo. Single-schedule setups are unchanged (no update needed). |
