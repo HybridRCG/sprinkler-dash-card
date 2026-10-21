@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.1.0';
+const CARD_VERSION = '3.1.1';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -1746,7 +1746,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     let statusTxt = isOn ? '🟢 ON' : (sw?.state === 'unavailable' ? '⚠️ UNAVAILABLE' : '⚪ OFF');
     const tLeft = this._timerRemaining(idx);
     if (isOn && tLeft !== null) statusTxt += ' · auto-off in ' + Math.floor(tLeft/60) + 'm ' + String(Math.round(tLeft%60)).padStart(2,'0') + 's';
-    status.innerHTML = '<strong>Status:</strong> ' + statusTxt;
+    status.append(Object.assign(document.createElement('strong'), { textContent:'Status:' }), ' ' + statusTxt);
 
     // Duration for THIS manual run only — the scheduled duration helper is not touched
     const durSection = document.createElement('div');
@@ -1783,7 +1783,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     const lastRun = document.createElement('div');
     lastRun.style.cssText = 'font-size:12px;margin-bottom:15px;padding:10px;background:rgba(77,196,154,0.1);border-radius:6px';
     const lastChanged = sw?.last_changed ? new Date(sw.last_changed).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false}) : 'unknown';
-    lastRun.innerHTML = '<strong>Last Activity:</strong> ' + lastChanged;
+    lastRun.append(Object.assign(document.createElement('strong'), { textContent:'Last Activity:' }), ' ' + lastChanged);
 
     const buttons = document.createElement('div');
     buttons.style.cssText = 'display:flex;gap:10px;margin-top:15px';
@@ -1827,16 +1827,23 @@ class SprinklerDashCardV2 extends HTMLElement {
     this._svc('input_text', 'set_value', {entity_id: MANUAL_LOG_E, value: data});
   }
 
+  // input_text.sprinkler_manual_log is user-settable: accept only well-formed
+  // entries and coerce every field (z → short string, d/t → numbers)
   _loadManualLog() {
     const raw = this._hass?.states[MANUAL_LOG_E]?.state;
     if (!raw || raw === 'unknown' || raw === 'unavailable') return;
+    const clean = (z, d, t) => {
+      d = Math.round(Number(d)); t = Math.round(Number(t));
+      if (z === undefined || z === null || !isFinite(d) || !isFinite(t)) return null;
+      return { z: String(z).slice(0, 64), d: Math.max(0, Math.min(999, d)), t };
+    };
     try {
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) this._manualRunLog = parsed.filter(e => e && e.z);
+      if (Array.isArray(parsed)) this._manualRunLog = parsed.filter(e => e && typeof e === 'object').map(e => clean(e.z, e.d, e.t)).filter(Boolean);
       else if (parsed && typeof parsed === 'object') {
         // pre-3.0 format: { "switch.x": {zone, duration, timestamp} }
-        this._manualRunLog = Object.values(parsed).filter(e => e && e.zone)
-          .map(e => ({ z: e.zone, d: e.duration, t: Math.round(new Date(e.timestamp).getTime()/1000) }))
+        this._manualRunLog = Object.values(parsed).filter(e => e && typeof e === 'object')
+          .map(e => clean(e.zone, e.duration, new Date(e.timestamp).getTime()/1000)).filter(Boolean)
           .sort((a,b) => b.t - a.t);
       }
     } catch(err) { /* ignore malformed data */ }
@@ -1887,6 +1894,9 @@ class SprinklerDashCardV2 extends HTMLElement {
     return out;
   }
 
+  // Built with createElement + textContent only: zone names come from the card
+  // config (or friendly_name via getStubConfig) and manual-log entries from an
+  // input_text any user can set, so nothing here is ever parsed as HTML.
   async _showLastRun() {
     const r = this.shadowRoot;
     const body = r.getElementById('lastrun-body');
@@ -1896,18 +1906,35 @@ class SprinklerDashCardV2 extends HTMLElement {
     const allZones = this._activeZones().filter(z => z.sw);
     const fmtDur = (s) => { s = Math.round(s); const m = Math.floor(s/60), sec = s%60; return m + 'm' + (sec ? ' ' + String(sec).padStart(2,'0') + 's' : ''); };
 
-    let html = '';
+    const el = (tag, cls, text, style) => {
+      const n = document.createElement(tag);
+      if (cls) n.className = cls;
+      if (style) n.style.cssText = style;
+      if (text !== undefined && text !== null) n.textContent = String(text);
+      return n;
+    };
+    const note = (text, style) => el('p', '', text, style || 'color:var(--secondary-text-color,#666)');
+    const section = (text, style) => el('div', 'lastrun-section-lbl', text, style);
+    const row = (nameCls, name, right, rightStyle) => {
+      const d = el('div', 'lastrun-row');
+      d.append(el('span', nameCls, name), el('span', 'lastrun-dur', right, rightStyle));
+      return d;
+    };
+    const nodes = [];
+
     if (!lastTriggered) {
-      html += '<p style="color:var(--secondary-text-color,#666)">⏳ No scheduled run found. Run the schedule to populate this view.</p>';
+      nodes.push(note('⏳ No scheduled run found. Run the schedule to populate this view.'));
     } else if (!allZones.length) {
-      html += '<p style="color:var(--secondary-text-color,#666);margin-top:10px">No zones configured.</p>';
+      nodes.push(note('No zones configured.', 'color:var(--secondary-text-color,#666);margin-top:10px'));
     } else {
-      body.innerHTML = '<p style="color:var(--secondary-text-color,#666)">Loading run history…</p>';
+      body.replaceChildren(note('Loading run history…'));
       const runStart = new Date(lastTriggered).getTime();
       const windowStart = runStart - 2*60*1000;
       const windowEnd = Math.min(Date.now(), runStart + 6*60*60*1000);
       const ts = new Date(lastTriggered).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});
-      html += '<div class="lastrun-ts">📅 ' + ts + (this._isRunActive() ? ' · <span style="color:#4dc49a">in progress</span>' : '') + '</div>';
+      const tsEl = el('div', 'lastrun-ts', '📅 ' + ts);
+      if (this._isRunActive()) { tsEl.append(' · ', el('span', '', 'in progress', 'color:#4dc49a')); }
+      nodes.push(tsEl);
 
       let onSecs = null;
       try { onSecs = await this._onSeconds(allZones.map(z=>z.sw), windowStart, windowEnd); }
@@ -1925,45 +1952,44 @@ class SprinklerDashCardV2 extends HTMLElement {
         else missing.push(z);
       });
 
-      if (onSecs === null) html += '<p style="color:#ffb43c">Could not read history from Home Assistant.</p>';
+      if (onSecs === null) nodes.push(note('Could not read history from Home Assistant.', 'color:#ffb43c'));
       if (ran.length) {
-        html += '<div class="lastrun-section-lbl">Watered (' + ran.length + ')</div>';
+        nodes.push(section('Watered (' + ran.length + ')'));
         ran.forEach(({z, secs}) => {
-          const planned = z.dur ? parseFloat(this._hass.states[z.dur]?.state || 0) : 0;
+          const planned = z.dur ? (parseFloat(this._hass.states[z.dur]?.state) || 0) : 0;
           const short = planned && secs < planned*60 - 60;
-          html += '<div class="lastrun-row"><span class="lastrun-zone">💧 ' + z.name + '</span>' +
-            '<span class="lastrun-dur" style="font-size:11px;color:' + (short ? '#ffb43c' : 'var(--secondary-text-color,#999)') + '">' +
-            fmtDur(secs) + (short ? ' of ' + planned + 'm' : '') + '</span></div>';
+          nodes.push(row('lastrun-zone', '💧 ' + z.name, fmtDur(secs) + (short ? ' of ' + planned + 'm' : ''),
+            'font-size:11px;color:' + (short ? '#ffb43c' : 'var(--secondary-text-color,#999)')));
         });
       } else if (onSecs !== null) {
-        html += '<p style="color:var(--secondary-text-color,#666);margin-top:4px">No zones watered in this run window.</p>';
+        nodes.push(note('No zones watered in this run window.', 'color:var(--secondary-text-color,#666);margin-top:4px'));
       }
       if (waiting.length) {
-        html += '<div class="lastrun-section-lbl" style="margin-top:10px">Still queued (' + waiting.length + ')</div>';
-        waiting.forEach(z => { html += '<div class="lastrun-row"><span class="lastrun-zone">⏳ ' + z.name + '</span><span class="lastrun-dur">—</span></div>'; });
+        nodes.push(section('Still queued (' + waiting.length + ')', 'margin-top:10px'));
+        waiting.forEach(z => nodes.push(row('lastrun-zone', '⏳ ' + z.name, '—')));
       }
       if (skipped.length) {
-        html += '<div class="lastrun-section-lbl" style="margin-top:10px">Skipped / not scheduled (' + skipped.length + ')</div>';
-        skipped.forEach(z => { html += '<div class="lastrun-row"><span class="lastrun-skipped">⏭ ' + z.name + '</span><span class="lastrun-dur">—</span></div>'; });
+        nodes.push(section('Skipped / not scheduled (' + skipped.length + ')', 'margin-top:10px'));
+        skipped.forEach(z => nodes.push(row('lastrun-skipped', '⏭ ' + z.name, '—')));
       }
       if (missing.length) {
-        html += '<div class="lastrun-section-lbl" style="margin-top:10px">Did not run (' + missing.length + ')</div>';
+        nodes.push(section('Did not run (' + missing.length + ')', 'margin-top:10px'));
         missing.forEach(z => {
           const sw = this._hass.states[z.sw];
           const why = sw?.state === 'unavailable' ? 'unavailable' : (sw?.last_changed ? 'last ' + this._formatTimeAgo(new Date(sw.last_changed)) : 'never');
-          html += '<div class="lastrun-row"><span class="lastrun-skipped">⚪ ' + z.name + '</span><span class="lastrun-dur" style="font-size:11px">' + why + '</span></div>';
+          nodes.push(row('lastrun-skipped', '⚪ ' + z.name, why, 'font-size:11px'));
         });
       }
     }
 
     if (this._manualRunLog.length) {
-      html += '<div class="lastrun-section-lbl" style="margin-top:12px;opacity:0.8;font-size:11px">MANUAL RUNS</div>';
+      nodes.push(section('MANUAL RUNS', 'margin-top:12px;opacity:0.8;font-size:11px'));
       this._manualRunLog.forEach(e => {
-        html += '<div class="lastrun-row"><span class="lastrun-zone">🔧 ' + e.z + '</span>' +
-          '<span class="lastrun-dur" style="font-size:11px;color:var(--secondary-text-color,#999)">' + e.d + 'm • ' + this._formatTimeAgo(new Date(e.t*1000)) + '</span></div>';
+        nodes.push(row('lastrun-zone', '🔧 ' + e.z, e.d + 'm • ' + this._formatTimeAgo(new Date(e.t*1000)),
+          'font-size:11px;color:var(--secondary-text-color,#999)'));
       });
     }
-    body.innerHTML = html;
+    body.replaceChildren(...nodes);
   }
 
   _formatTimeAgo(date) {
