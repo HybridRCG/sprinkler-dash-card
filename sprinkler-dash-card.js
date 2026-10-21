@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.2.1';
+const CARD_VERSION = '3.3.0';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -13,6 +13,11 @@ const QUEUE_E = 'input_text.sprinkler_queue';
 const RAIN_PAUSE_E = 'input_text.sprinkler_rain_pause';
 const SKIP_E = 'input_text.sprinkler_skip_zones';
 const MANUAL_LOG_E = 'input_text.sprinkler_manual_log';
+// schedule 2: own per-zone minutes ("k:mins,k:mins", k = short id of the zone's switch,
+// so values follow a zone when zones are reordered) and its own script
+const DUR2_E = 'input_text.sprinkler_durations_2';
+const SCRIPT2 = 'sprinkler_2';
+const zoneKey = (sw) => { let h = 5381; for (let i = 0; i < sw.length; i++) h = ((h << 5) + h + sw.charCodeAt(i)) >>> 0; return h.toString(36).slice(-4); };
 const ADVANCE_EVENT = 'sprinkler_dash_advance';
 const zoneTimer = (i) => 'timer.sprinkler_zone_' + (i + 1);
 const hhmm00 = (mins) => String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0') + ':00';
@@ -190,13 +195,15 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _queueState() { return this._hass?.states[QUEUE_E]?.state || ''; }
   _isRunActive() {
-    return this._queueState().startsWith('run:') || this._hass?.states['script.sprinkler']?.state === 'on';
+    const q = this._queueState();
+    return q.startsWith('run:') || q.startsWith('run2:') || this._hass?.states['script.sprinkler']?.state === 'on' || this._hass?.states['script.' + SCRIPT2]?.state === 'on';
   }
   _queuedZoneNums() {
     const q = this._queueState();
-    if (!q.startsWith('run:')) return [];
-    return q.slice(4).split(',').map(x => parseInt(x)).filter(n => !isNaN(n));
+    if (!q.startsWith('run:') && !q.startsWith('run2:')) return [];
+    return q.slice(q.indexOf(':') + 1).split(',').map(x => parseInt(x)).filter(n => !isNaN(n));
   }
+
 
   _loadMdiIcons() {
     this._mdiLoaded = true; // prevent multiple fetches
@@ -293,7 +300,7 @@ class SprinklerDashCardV2 extends HTMLElement {
   // zones as the engine sees them: position-numbered, only zones with a switch
   _engineZones() {
     return this._activeZones().map((z,i)=>({
-      n: i+1, sw: z.sw||'', dur: z.dur||'', t: zoneTimer(i), name: z.name||('Zone '+(i+1)),
+      n: i+1, sw: z.sw||'', dur: z.dur||'', t: zoneTimer(i), name: z.name||('Zone '+(i+1)), k: zoneKey(z.sw||''),
       sched: z.schedule_enabled !== false,
     })).filter(z => z.sw);
   }
@@ -319,7 +326,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       r: this._cfg.rules||{}, rs: this._cfg.rain_sensor||'', rt: this._cfg.rain_threshold||5,
       rh: this._cfg.rain_restore_hours||48, se: this._cfg.schedule_entity||'',
       jl: this._jojoLevelEntity(), jp: this._cfg.jojo_low_pct||35, ns: this._cfg.notify_service||'',
-      ...(this._schedEntities().length > 1 ? { se2: this._schedEntities()[1] } : {}),
+      ...(this._schedEntities().length > 1 ? { se2: this._schedEntities()[1], d2: 1 } : {}),
     });
     let h = 5381;
     for (let i = 0; i < data.length; i++) h = ((h << 5) + h + data.charCodeAt(i)) >>> 0;
@@ -348,11 +355,51 @@ class SprinklerDashCardV2 extends HTMLElement {
       mode: 'single',
       sequence: [
         // with two schedules a run can still be going when the other one fires: do not restart it
-        ...(this._schedEntities().length > 1 ? [{ condition:'template', value_template: "{{ not states('" + QUEUE_E + "').startswith('run:') }}" }] : []),
+        ...(this._schedEntities().length > 1 ? [{ condition:'template', value_template: "{{ ':' not in states('" + QUEUE_E + "') }}" }] : []),
         { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value: 'run:' + nums.join(',') } },
         { event: ADVANCE_EVENT, event_data: { source: 'script' } },
       ],
     };
+  }
+
+  // schedule 2's script: same zones, but a run2: queue so the controller uses schedule-2 minutes
+  _sprinkler2ScriptConfig() {
+    const nums = this._engineZones().filter(z => z.sched).map(z => z.n);
+    return {
+      alias: 'Sprinkler 2',
+      icon: 'mdi:sprinkler-fire',
+      description: MARKER + '. Schedule 2: loads the run queue with schedule-2 durations (input_text.sprinkler_durations_2).',
+      mode: 'single',
+      sequence: [
+        { condition:'template', value_template: "{{ ':' not in states('" + QUEUE_E + "') }}" },
+        { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value: 'run2:' + nums.join(',') } },
+        { event: ADVANCE_EVENT, event_data: { source: 'script2' } },
+      ],
+    };
+  }
+
+  // which script a schedule row runs
+  _scriptFor(e) {
+    return (this._schedEntities().length > 1 && e === this._cfg.schedule_entity_2) ? 'script.' + SCRIPT2 : 'script.sprinkler';
+  }
+
+  // schedule-2 minutes per zone: { key: minutes } (missing = same as schedule 1)
+  _dur2Map() {
+    const out = {};
+    (this._hass?.states[DUR2_E]?.state || '').split(',').forEach(p => {
+      const [k, v] = p.split(':');
+      if (k && v !== undefined && /^\d{1,3}$/.test(v.trim())) out[k.trim()] = parseInt(v);
+    });
+    return out;
+  }
+
+  _setDur2(sw, mins) {
+    if (!this._hass.states[DUR2_E] || !sw) return;
+    const k = zoneKey(sw), keys = new Set(this._activeZones().filter(z => z.sw).map(z => zoneKey(z.sw)));
+    const m = this._dur2Map();
+    if (mins === null) delete m[k]; else m[k] = Math.max(0, Math.min(999, Math.round(mins)));
+    const value = Object.entries(m).filter(([key]) => keys.has(key)).map(([key, v]) => key + ':' + v).join(',');
+    this._svc('input_text', 'set_value', { entity_id: DUR2_E, value });
   }
 
   // GET a script/automation config; null only when HA says it does not exist
@@ -415,6 +462,35 @@ class SprinklerDashCardV2 extends HTMLElement {
       plan.blocked.push('script.sprinkler already exists (defined in YAML) and was not created by this card. Rename or remove it, then run Set up again.');
     } else {
       plan.actions.push({ label:'Create script.sprinkler (starts a schedule run)', run: () => this._writeOwned('script', 'sprinkler', wantScript) });
+    }
+
+    // schedule 2: its own script + per-zone minutes helper, and the schedule must run that script
+    const sch = this._schedEntities();
+    if (sch.length > 1) {
+      if (st[DUR2_E]) plan.reuse.push(DUR2_E);
+      else plan.actions.push({ label:'Create helper ' + DUR2_E + ' (schedule-2 minutes per zone)', run: () => ws({ type:'input_text/create', name:'Sprinkler Durations 2', max:255, min:0, mode:'text', icon:'mdi:timer-cog-outline' }) });
+      const want2 = this._sprinkler2ScriptConfig();
+      const cur2 = await this._getConfig('script', SCRIPT2);
+      if (cur2) {
+        if (!String(cur2.description || '').includes(MARKER)) plan.blocked.push('script.' + SCRIPT2 + ' already exists and was not created by this card.');
+        else if (JSON.stringify(cur2.sequence) !== JSON.stringify(want2.sequence)) plan.actions.push({ label:'Update script.' + SCRIPT2 + ' (created by this card)', run: () => this._writeOwned('script', SCRIPT2, want2) });
+      } else if (st['script.' + SCRIPT2]) {
+        plan.blocked.push('script.' + SCRIPT2 + ' already exists (defined in YAML) and was not created by this card.');
+      } else {
+        plan.actions.push({ label:'Create script.' + SCRIPT2 + ' (runs schedule 2 with its own minutes)', run: () => this._writeOwned('script', SCRIPT2, want2) });
+      }
+      const s2 = st[sch[1]];
+      const ents = s2?.attributes?.entities || [];
+      if (s2 && !ents.includes('script.' + SCRIPT2)) {
+        if (ents.length === 1 && ents[0] === 'script.sprinkler') {
+          const slots = (s2.attributes.timeslots || []).map(t => String(typeof t === 'string' ? t : t.start || '').split(' - ')[0]).filter(Boolean);
+          plan.actions.push({ label:'Point ' + sch[1] + ' at script.' + SCRIPT2 + ' (days and times unchanged)', run: () => this._hass.callService('scheduler', 'edit', {
+            entity_id: sch[1], timeslots: (slots.length ? slots : ['18:00:00']).map(start => ({ start, actions:[{ service:'script.turn_on', entity_id:'script.' + SCRIPT2 }] })),
+          }) });
+        } else {
+          plan.warnings.push(sch[1] + ' does not run script.sprinkler, so it was left alone. Point it at script.' + SCRIPT2 + ' to use the schedule-2 minutes.');
+        }
+      }
     }
 
     // controller automation
@@ -589,6 +665,10 @@ class SprinklerDashCardV2 extends HTMLElement {
     const pausedList = "((" + ps + ".split('|')[1].split(',')) if '|' in " + ps + " else ['" + sched + "']) | reject('eq','') | list";
     const zoneBy = (key, expr) => "{{ zones | selectattr('" + key + "','eq', " + expr + ") | first | default({}) }}";
     const minsOf = "{{ ((states(z.dur) | int(0)) if z.dur else 10) }}";
+    // schedule-2 run: minutes from input_text.sprinkler_durations_2 ("key:mins,…"); missing → schedule-1 minutes, 0 → skip
+    const mins2Of = "{% set ns = namespace(v='') %}{% if kind == 'run2' %}{% for p in (states('" + DUR2_E + "') | default('')).split(',') %}" +
+      "{% if ':' in p and p.split(':')[0] | trim == z.k %}{% set ns.v = p.split(':')[1] | trim %}{% endif %}{% endfor %}{% endif %}" +
+      "{{ (ns.v | int(0)) if ns.v != '' else ((states(z.dur) | int(0)) if z.dur else 10) }}";
     const durTpl = "{{ '%02d:%02d:00' % ((mins | int) // 60, (mins | int) % 60) }}";
     const cont = { continue_on_error: true };
     const advance = { event: ADVANCE_EVENT, event_data: {} };
@@ -633,16 +713,18 @@ class SprinklerDashCardV2 extends HTMLElement {
       // ── advance: start the next queued zone once nothing is watering
       { conditions:[{ condition:'trigger', id:'advance' }], sequence:[
         { variables:{ q: "{{ states('" + QUEUE_E + "') }}" } },
-        tpl("{{ q.startswith('run:') }}"),
+        tpl(multi ? "{{ q.startswith('run:') or q.startswith('run2:') }}" : "{{ q.startswith('run:') }}"),
         tpl("{{ zones | map(attribute='t') | select('is_state','active') | list | count == 0 }}"),
         // never open a valve while another zone valve is still physically on
         tpl("{{ zones | map(attribute='sw') | select('is_state','on') | list | count == 0 }}"),
-        { variables:{ rest: "{{ q[4:].split(',') | reject('eq','') | list }}" } },
+        { variables: multi
+          ? { kind: "{{ q.split(':')[0] }}", rest: "{{ q.split(':', 1)[1].split(',') | reject('eq','') | list }}" }
+          : { rest: "{{ q[4:].split(',') | reject('eq','') | list }}" } },
         { if:[ tpl("{{ rest | count == 0 }}") ], then:[
           { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value:'' } },
           { stop:'run complete' },
         ]},
-        { variables:{ z: zoneBy('n', "(rest[0] | int(0))"), remaining: "{{ 'run:' ~ (rest[1:] | join(',')) }}" } },
+        { variables:{ z: zoneBy('n', "(rest[0] | int(0))"), remaining: multi ? "{{ kind ~ ':' ~ (rest[1:] | join(',')) }}" : "{{ 'run:' ~ (rest[1:] | join(',')) }}" } },
         { action:'input_text.set_value', target:{ entity_id: QUEUE_E }, data:{ value: "{{ remaining }}" } },
         ...jojoAbort,
         { if:[ tpl("{{ not z.get('sw') }}") ], then:[ advance, { stop:'unknown zone' } ] },
@@ -651,7 +733,7 @@ class SprinklerDashCardV2 extends HTMLElement {
             data:{ value: "{{ (states('" + SKIP_E + "') | default('')).split(',') | reject('eq', z.sw) | reject('eq','') | join(',') }}" } },
           advance, { stop:'skipped' },
         ]},
-        { variables:{ mins: minsOf } },
+        { variables:{ mins: multi ? mins2Of : minsOf } },
         { if:[ tpl("{{ mins | int(0) <= 0 }}") ], then:[ advance, { stop:'zero duration' } ] },
         { action:'timer.start', target:{ entity_id: "{{ z.t }}" }, data:{ duration: durTpl }, ...cont },
         { action:'switch.turn_on', target:{ entity_id: "{{ z.sw }}" }, ...cont },
@@ -802,7 +884,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       mode: 'queued',
       max: 50,
       max_exceeded: 'silent',
-      variables: { zones: Z.map(z => ({ n:z.n, sw:z.sw, dur:z.dur, t:z.t, name:z.name })), ...(multi ? { scheds } : {}) },
+      variables: { zones: Z.map(z => multi ? ({ n:z.n, sw:z.sw, dur:z.dur, t:z.t, name:z.name, k:z.k }) : ({ n:z.n, sw:z.sw, dur:z.dur, t:z.t, name:z.name })), ...(multi ? { scheds } : {}) },
       triggers,
       conditions: [],
       actions: [{ choose: branches }],
@@ -945,6 +1027,8 @@ class SprinklerDashCardV2 extends HTMLElement {
     .zone--skip::before{background:repeating-linear-gradient(90deg,#ffb43c 0 6px,transparent 6px 12px)!important}
     .hbtn--stop-sched{background:rgba(210,45,45,0.85);color:#fff}
     .hbtn--lastrun{background:rgba(255,255,255,0.92);color:#0a5c45}
+    .zdur2{font-size:10px;color:var(--secondary-text-color,#888);margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .zdur2 b{color:#7db8e8;font-weight:600}
     .zlast{font-size:10px;color:var(--secondary-text-color,#666);min-height:12px}
     .zlast--recent{color:#4dc49a}
     /* last-run modal */
@@ -1331,7 +1415,9 @@ class SprinklerDashCardV2 extends HTMLElement {
       const bm=document.createElement('button'); bm.className='zdur-btn'; bm.textContent='-';
       const bp=document.createElement('button'); bp.className='zdur-btn'; bp.textContent='+';
       db.append(bm,bp); dr.append(dl,di,du,db);
-      el.append(top,pt,statusRow,dv,dr); grid.appendChild(el);
+      const d2=document.createElement('div'); d2.className='zdur2'; d2.id='zdur2-'+i; d2.style.display='none';
+      d2.title='Minutes for the second schedule: tap the tile to change';
+      el.append(top,pt,statusRow,dv,dr,d2); grid.appendChild(el);
       
       // Click zone card to expand details
       el.addEventListener('click', (ev) => {
@@ -1448,7 +1534,7 @@ class SprinklerDashCardV2 extends HTMLElement {
   // for itself (settings belong to the card editor), so afterwards it names the new switch.
   _schedulesForScript() {
     return Object.values(this._hass?.states || {}).filter(s =>
-      s.entity_id.startsWith('switch.schedule_') && (s.attributes?.entities || []).includes('script.sprinkler')).map(s => s.entity_id);
+      s.entity_id.startsWith('switch.schedule_') && (s.attributes?.entities || []).some(x => x === 'script.sprinkler' || x === 'script.' + SCRIPT2)).map(s => s.entity_id);
   }
 
   _renderSched2Box() {
@@ -1890,7 +1976,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       if (!ok) return;
       // clear the queue first so closing the valves does not advance to the next zone
       this._clearQueue();
-      this._svc('script', 'turn_off', {entity_id: 'script.sprinkler'});
+      this._svc('script', 'turn_off', {entity_id: ['script.sprinkler', ...(this._hass.states['script.' + SCRIPT2] ? ['script.' + SCRIPT2] : [])]});
       const allSwitches = this._zoneSwitches();
       if (allSwitches.length) this._svc('switch', 'turn_off', {entity_id: allSwitches});
     });
@@ -1976,8 +2062,48 @@ class SprinklerDashCardV2 extends HTMLElement {
     });
     if (isOn) durSection.style.display = 'none';
 
+    // schedule 2 minutes for this zone (stored in input_text.sprinkler_durations_2, saved immediately)
+    let d2Section = null;
+    if (this._schedEntities().length > 1 && z.sw) {
+      const lbl2 = this._schedRows()[1]?.label || 'Schedule 2';
+      d2Section = document.createElement('div');
+      d2Section.style.cssText = 'margin:0 0 15px;padding:12px 15px;background:rgba(125,184,232,0.08);border-radius:8px;text-align:center';
+      const head = document.createElement('div');
+      head.style.cssText = 'font-size:12px;color:var(--secondary-text-color,#999);margin-bottom:8px;text-transform:uppercase;font-weight:600;letter-spacing:1px';
+      head.textContent = lbl2 + ' duration';
+      d2Section.appendChild(head);
+      if (!this._hass.states[DUR2_E]) {
+        const note = document.createElement('div'); note.style.cssText = 'font-size:12px;color:#ffb43c';
+        note.textContent = 'Run Set up (gear icon) to enable separate minutes for ' + lbl2.toLowerCase() + '.';
+        d2Section.appendChild(note);
+      } else {
+        const k = zoneKey(z.sw);
+        let v2 = this._dur2Map()[k];
+        const show = document.createElement('div'); show.style.cssText = 'font-size:26px;font-weight:700;color:#7db8e8;margin:4px 0 8px;font-family:monospace';
+        const sub = document.createElement('div'); sub.style.cssText = 'font-size:11px;color:var(--secondary-text-color,#999);margin-bottom:10px';
+        const paint = () => {
+          show.textContent = v2 === undefined ? scheduledDur + ' min' : v2 === 0 ? 'skip' : v2 + ' min';
+          sub.textContent = v2 === undefined ? 'same as ' + (this._schedRows()[0]?.label || 'schedule 1').toLowerCase() : v2 === 0 ? 'this zone does not run on ' + lbl2.toLowerCase() : '';
+        };
+        paint();
+        let saveT = null;
+        const save = () => { clearTimeout(saveT); saveT = setTimeout(() => this._setDur2(z.sw, v2 === undefined ? null : v2), 500); };
+        const mk = (txt, bg, fg, fn) => { const b = document.createElement('button'); b.textContent = txt;
+          b.style.cssText = 'min-width:44px;height:36px;border-radius:7px;border:none;background:'+bg+';color:'+fg+';font-size:18px;font-weight:700;cursor:pointer;padding:0 10px';
+          b.addEventListener('click', fn); return b; };
+        const row = document.createElement('div'); row.style.cssText = 'display:flex;gap:8px;justify-content:center';
+        row.append(
+          mk('−', 'rgba(255,255,255,0.1)', '#fff', () => { v2 = Math.max(0, (v2 === undefined ? scheduledDur : v2) - 1); paint(); save(); }),
+          mk('+', 'rgba(125,184,232,0.35)', '#fff', () => { v2 = Math.min(60, (v2 === undefined ? scheduledDur : v2) + 1); paint(); save(); }),
+          mk('Same', 'rgba(255,255,255,0.06)', 'var(--secondary-text-color,#bbb)', () => { v2 = undefined; paint(); save(); }),
+        );
+        row.lastChild.style.fontSize = '12px';
+        d2Section.append(show, sub, row);
+      }
+    }
+
     buttons.append(closeBtn, toggleBtn);
-    content.append(title, status, durSection, lastRun, buttons);
+    content.append(title, status, durSection, ...(d2Section ? [d2Section] : []), lastRun, buttons);
     modal.append(content);
     modal.addEventListener('click', (ev) => { if (ev.target === modal) modal.remove(); });
     document.body.appendChild(modal);
@@ -2074,7 +2200,11 @@ class SprinklerDashCardV2 extends HTMLElement {
     const body = r.getElementById('lastrun-body');
     r.getElementById('lastrun-modal').classList.add('lastrun-modal--open');
 
-    const lastTriggered = this._hass.states['script.sprinkler']?.attributes?.last_triggered;
+    const lt1 = this._hass.states['script.sprinkler']?.attributes?.last_triggered;
+    const lt2 = this._hass.states['script.' + SCRIPT2]?.attributes?.last_triggered;
+    const run2 = !!lt2 && (!lt1 || new Date(lt2) > new Date(lt1));
+    const lastTriggered = run2 ? lt2 : lt1;
+    const d2 = run2 ? this._dur2Map() : {};
     const allZones = this._activeZones().filter(z => z.sw);
     const fmtDur = (s) => { s = Math.round(s); const m = Math.floor(s/60), sec = s%60; return m + 'm' + (sec ? ' ' + String(sec).padStart(2,'0') + 's' : ''); };
 
@@ -2104,7 +2234,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       const windowStart = runStart - 2*60*1000;
       const windowEnd = Math.min(Date.now(), runStart + 6*60*60*1000);
       const ts = new Date(lastTriggered).toLocaleString([], {weekday:'short',month:'short',day:'numeric',hour:'2-digit',minute:'2-digit',hour12:false});
-      const tsEl = el('div', 'lastrun-ts', '📅 ' + ts);
+      const tsEl = el('div', 'lastrun-ts', '📅 ' + ts + (this._schedEntities().length > 1 ? ' · ' + (this._schedRows()[run2 ? 1 : 0]?.label || '') : ''));
       if (this._isRunActive()) { tsEl.append(' · ', el('span', '', 'in progress', 'color:#4dc49a')); }
       nodes.push(tsEl);
 
@@ -2120,7 +2250,7 @@ class SprinklerDashCardV2 extends HTMLElement {
         const secs = onSecs ? (onSecs[z.sw] || 0) : null;
         if (secs !== null && secs >= 20) ran.push({ z, secs });
         else if (queued.includes(idx+1)) waiting.push(z);
-        else if (skipList.includes(z.sw) || z.schedule_enabled === false) skipped.push(z);
+        else if (skipList.includes(z.sw) || z.schedule_enabled === false || (run2 && d2[zoneKey(z.sw)] === 0)) skipped.push(z);
         else missing.push(z);
       });
 
@@ -2128,7 +2258,8 @@ class SprinklerDashCardV2 extends HTMLElement {
       if (ran.length) {
         nodes.push(section('Watered (' + ran.length + ')'));
         ran.forEach(({z, secs}) => {
-          const planned = z.dur ? (parseFloat(this._hass.states[z.dur]?.state) || 0) : 0;
+          const k = zoneKey(z.sw);
+          const planned = (run2 && d2[k] !== undefined) ? d2[k] : (z.dur ? (parseFloat(this._hass.states[z.dur]?.state) || 0) : 0);
           const short = planned && secs < planned*60 - 60;
           nodes.push(row('lastrun-zone', '💧 ' + z.name, fmtDur(secs) + (short ? ' of ' + planned + 'm' : ''),
             'font-size:11px;color:' + (short ? '#ffb43c' : 'var(--secondary-text-color,#999)')));
@@ -2185,7 +2316,7 @@ class SprinklerDashCardV2 extends HTMLElement {
 
   _saveTime(e, ts) {
     if (!e) return;
-    this._svc('scheduler','edit',{entity_id:e,timeslots:[{start:ts+':00',actions:[{service:'script.turn_on',entity_id:'script.sprinkler'}]}]});
+    this._svc('scheduler','edit',{entity_id:e,timeslots:[{start:ts+':00',actions:[{service:'script.turn_on',entity_id:this._scriptFor(e)}]}]});
   }
 
   _update() { this._updateMeta(); this._updateZones(); this._updateSchedule(); }
@@ -2301,6 +2432,17 @@ class SprinklerDashCardV2 extends HTMLElement {
       const inp=this.shadowRoot.getElementById('zdur-'+i);
       if(inp&&inp!==this.shadowRoot.activeElement){inp.min=durMin;inp.max=durMax;inp.value=durVal;}
       this._renderZoneProgress(i, z, queued);
+      const d2el=this.shadowRoot.getElementById('zdur2-'+i);
+      if (d2el) {
+        const two = this._schedEntities().length > 1 && !!z.sw;
+        d2el.style.display = two ? '' : 'none';
+        if (two) {
+          const v = this._dur2Map()[zoneKey(z.sw)];
+          const lbl = this._schedRows()[1]?.label || 'Schedule 2';
+          d2el.replaceChildren(document.createTextNode(lbl + ': '),
+            Object.assign(document.createElement('b'), { textContent: v === undefined ? 'same (' + durVal + ' min)' : v === 0 ? 'skip' : v + ' min' }));
+        }
+      }
       // last-changed badge
       const zlastEl = this.shadowRoot.getElementById('zlast-'+i);
       if (zlastEl && !isOn && z.sw) {
@@ -2421,6 +2563,8 @@ class SprinklerDashCardV2 extends HTMLElement {
   }
 
   getCardSize(){ return 7; }
+  // sections layout: full section width by default, height follows content
+  getGridOptions(){ return { columns: 'full', min_columns: 6, rows: 'auto' }; }
 
   static getConfigElement() { return document.createElement('sprinkler-dash-card-v2-editor'); }
 
