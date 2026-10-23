@@ -1,12 +1,12 @@
-<p align="center"><img src="logo.png" alt="Sprinkler Dash Card" width="128"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/HybridRCG/sprinkler-dash-card/main/logo.png" alt="Sprinkler Dash Card" width="128"></p>
 
 <h1 align="center">Sprinkler Dash Card</h1>
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, configure it in the card editor, and press **Set up** once to create the script and automation that do the watering.
 
-![Version](https://img.shields.io/badge/version-v3.3.1-green)
+![Version](https://img.shields.io/badge/version-v3.3.2-green)
 ![HACS](https://img.shields.io/badge/HACS-Default-orange)
-![HA](https://img.shields.io/badge/Home%20Assistant-2023.1%2B-blue)
+![HA](https://img.shields.io/badge/Home%20Assistant-2024.10%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
 
 ---
@@ -21,19 +21,19 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 
 | Main Card | Skip Next Run | Zone Popup |
 |---|---|---|
-| ![Main](Sprinkler1.png) | ![Skip Next Run](Sprinkler_exclude_next_run.png) | ![Zone Popup](Sprinkler4.png) |
+| ![Main](https://raw.githubusercontent.com/HybridRCG/sprinkler-dash-card/main/Sprinkler1.png) | ![Skip Next Run](https://raw.githubusercontent.com/HybridRCG/sprinkler-dash-card/main/Sprinkler_exclude_next_run.png) | ![Zone Popup](https://raw.githubusercontent.com/HybridRCG/sprinkler-dash-card/main/Sprinkler4.png) |
 
 | Set up — review before anything is created | Setup panel (⚙️) |
 |---|---|
-| ![Set up](Sprinkler_Setup.png) | ![Setup panel](Sprinkler_Setup_Done.png) |
+| ![Set up](https://raw.githubusercontent.com/HybridRCG/sprinkler-dash-card/main/Sprinkler_Setup.png) | ![Setup panel](https://raw.githubusercontent.com/HybridRCG/sprinkler-dash-card/main/Sprinkler_Setup_Done.png) |
 
 | Wide card — 9 zones as 3×3 | Two schedules with their own minutes per zone |
 |---|---|
-| ![Wide card](Sprinkler_Wide.png) | ![Two schedules](Sprinkler_TwoSchedules.png) |
+| ![Wide card](https://raw.githubusercontent.com/HybridRCG/sprinkler-dash-card/main/Sprinkler_Wide.png) | ![Two schedules](https://raw.githubusercontent.com/HybridRCG/sprinkler-dash-card/main/Sprinkler_TwoSchedules.png) |
 
 | Card Editor |
 |---|
-| ![Card editor](Sprinkler_Editor.png) |
+| ![Card editor](https://raw.githubusercontent.com/HybridRCG/sprinkler-dash-card/main/Sprinkler_Editor.png) |
 
 ---
 
@@ -63,12 +63,12 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 - Per-zone skip next run — one-tap skip for the next run only, self-clearing after the schedule fires
 
 **Schedule management**
-- Built-in scheduler section — enable/disable, set run days, set run time with mobile-friendly HH/MM editor
+- Built-in scheduler section — enable/disable, set run days (the card asks before adding or removing a day), set run time with mobile-friendly HH/MM editor
 - Optional **second schedule** with its own days and time — water morning and evening, or on different days at different times. The card shows each under its Scheduler name (rename a schedule in Scheduler and the card follows). With two schedules the header has one Start button per schedule plus Last Run, all the same width; rain pauses and restores each one, and a run that is still going is never restarted by the other schedule
-- **Own minutes per zone for schedule 2** — tap a zone and set its *Evening duration* (or leave it at *Same* as schedule 1). Press **Skip** (or set it to 0) to skip a zone on schedule 2, so each schedule can water different zones. Each tile shows the schedule-2 minutes; changes apply immediately, no update needed
+- **Own minutes per zone for schedule 2** — tap a zone and set its schedule-2 duration (shown under your schedule's name), or leave it at *Same* as schedule 1. Press **Skip** (or set it to 0) to skip a zone on schedule 2, so each schedule can water different zones. Each tile shows the schedule-2 minutes; changes apply immediately, no update needed
 - Smart next-run countdown — shows "Tonight 22:00", "Tomorrow 06:00", or "in 3h 45m"
-- Start Schedule button — manually triggers the full zone sequence
-- Stop Schedule button — clears the run queue and closes all valves (with confirmation)
+- Start button — runs the scheduled zones now; with two schedules there is one Start button per schedule, each using that schedule's minutes
+- Stop button — clears the run queue and closes all valves (with confirmation)
 
 **Run history**
 - Last Run popup — reads HA history for the most recent scheduled run and shows how long each zone *actually* watered (short runs highlighted), plus zones still queued, skipped, or that did not run
@@ -99,7 +99,7 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 
 ## Requirements
 
-- Home Assistant 2023.1+
+- Home Assistant 2024.10 or newer (the generated automation uses the current `triggers:` / `actions:` syntax)
 - [Scheduler Component](https://github.com/nielsfaber/scheduler-component) integration (via HACS)
 - One `input_number` helper per zone for duration (see Step 2)
 
@@ -171,7 +171,7 @@ Go to **Settings → Helpers → Add → Number** and create one per zone:
 | ... | | | | |
 | `input_number.valve_8_time` | 0 | 60 | 1 | min |
 
-Create up to `valve_12_time` for up to 12 zones.
+Any names work — these are just examples. Create up to 12 for up to 12 zones.
 
 ---
 
@@ -198,16 +198,17 @@ Set up (Step 8) can create a schedule for `script.sprinkler` for you. Adjust the
 | Setting | Description |
 |---|---|
 | Nav path | Where tapping the title navigates |
+| Rain limit | mm above which the schedule(s) auto-disable |
+| Rain restore | Hours before the schedule(s) re-enable after rain clears (default 48h) |
+| Tank low % | Tank level below which all zones shut off and scheduled runs are cancelled |
+| Notify | Optional notify service for tank-low / stuck-valve alerts, e.g. `notify.mobile_app_phone` |
 | Rain sensor | Precipitation sensor in mm |
-| Rain limit | mm above which schedule auto-disables |
-| Rain restore | Hours before schedule re-enables after rain clears (default 48h) |
 | Weather | Any `weather.*` entity |
-| Jojo sensor | Water tank litres sensor |
-| Jojo low % | Tank % below which all zones shut off immediately |
-| Schedule switch | The `switch.schedule_*` entity from Scheduler |
-| Schedule 2 switch | Optional second schedule (create one from the ⚙️ gear on the card). Per-zone minutes for it are set in each zone's popup |
+| Tank litres | Optional tank volume sensor (shown in the info bar) |
+| Tank level % | Tank level sensor the low-level shutoff watches |
+| Schedule sw | The `switch.schedule_*` entity from Scheduler |
+| Schedule 2 sw | Optional second schedule (create one from the ⚙️ gear on the card). Its minutes per zone are set in each zone's popup |
 | Zone columns | Auto (default), 2 or 3 |
-| Notify | Optional notify service for tank-low / stuck-valve alerts |
 
 ---
 
@@ -224,9 +225,9 @@ Layout auto-adjusts: 1=full, 2=50/50, 3=3-col, 4=2×2. Tap any slot to open enti
 | Rule | Behaviour |
 |---|---|
 | Confirm before activating | Confirmation popup on all zone/schedule actions |
-| Rain: Auto-disable schedule | Disables schedule when rain exceeds limit |
-| Rain: Auto-restore schedule | Re-enables schedule after rain clears (configurable hours) |
-| Jojo: Low-level zone shutoff | Closes all valves when tank drops below low % |
+| Rain: Auto-disable schedule | Switches the schedule(s) off when rain exceeds the limit |
+| Rain: Auto-restore schedule | Switches back on the schedules the rain rule paused, after the configured dry hours |
+| Tank: Low-level zone shutoff | Closes all valves and cancels the run when the tank stays below Tank low % for 2 minutes |
 
 ---
 
@@ -239,6 +240,7 @@ Tap the ⚙️ gear on the card (or use **Home Assistant setup** at the top of t
 - Create `script.sprinkler` (starts a schedule run)
 - Create automation **Sprinkler Controller** (runs the zones, auto-off timers, rain and tank rules)
 - Optionally: create a Scheduler schedule for `script.sprinkler`
+- With a second schedule: create `script.sprinkler_2` and `input_text.sprinkler_durations_2`, and point schedule 2 at `script.sprinkler_2` (its days and times stay)
 
 Nothing is written until you press **Confirm**. Later changes to zones, sensors or rules show a banner on the card with **Review update…**, which only ever updates the script and automation this card created.
 
@@ -256,7 +258,7 @@ This uses `input_text.sprinkler_skip_zones`, created by Set up.
 
 Tap **Last Run** to see what happened during the most recent scheduled run.
 
-- **Timestamp** — when the schedule last triggered (from `script.sprinkler`'s `last_triggered` attribute)
+- **Timestamp** — when the schedule last triggered (`script.sprinkler`, or `script.sprinkler_2` for schedule 2 — the popup says which schedule ran and compares against that schedule's minutes)
 - **Watered** — actual on-time per zone from HA's recorder history (up to 6 hours after start). Zones that ran noticeably shorter than configured are shown in amber, e.g. `6m 46s of 9m`
 - **Still queued** — zones waiting their turn while a run is in progress
 - **Skipped / not scheduled** — zones marked "skip next run" or excluded from the schedule
@@ -267,7 +269,7 @@ Tap **Last Run** to see what happened during the most recent scheduled run.
 
 ## Support
 
-- [Issues](../../issues)
+- [Issues](https://github.com/HybridRCG/sprinkler-dash-card/issues)
 - [Home Assistant Community](https://community.home-assistant.io)
 
 ---
@@ -276,6 +278,7 @@ Tap **Last Run** to see what happened during the most recent scheduled run.
 
 | Version | Changes |
 |---|---|
+| v3.3.2 | Day pills ask before adding or removing a day (when *Confirm before activating* is on), so a stray tap can no longer silently drop a run day. Tank settings are labelled **Tank** instead of *Jojo* (your saved settings are unchanged). README images now show in HACS, minimum Home Assistant version corrected to 2024.10, docs brought up to date. |
 | v3.3.1 | With two schedules the header shows **one Start button per schedule** plus Last Run, all equal width (a running schedule turns them into one Stop). Schedule names now come from the **Scheduler switches' own names** (the editor name fields are gone). **Skip** button for schedule-2 minutes in the zone popup. |
 | v3.3.0 | **NEW: schedule 2 has its own minutes per zone.** Set them in each zone's popup (*Same* = use schedule-1 minutes, *0* = skip that zone on schedule 2); the tile shows them. Stored in one helper (`input_text.sprinkler_durations_2`) keyed by zone, so values follow a zone when you reorder. Schedule 2 runs its own `script.sprinkler_2`; Set up creates it plus the helper and points schedule 2 at it (days/times kept). Last Run shows which schedule ran and compares against that schedule's minutes. Also: the card now tells HA how it sizes in sections layouts (no more "does not fully support resizing" note). Single-schedule setups are unchanged. |
 | v3.2.1 | **FIX:** Creating a schedule (Set up, and Create second schedule) failed with "required key not provided at 'repeat_type'" — the card now sends `repeat_type: repeat`, which current Scheduler Component versions require. |
@@ -288,32 +291,8 @@ Tap **Last Run** to see what happened during the most recent scheduled run.
 | v3.0.2 | **Jojo low % is now the single source of truth** — the controller uses the card setting for the tank shutoff. New settings: **Jojo level %** (pick the level sensor the shutoff watches — e.g. a smoothed/stable template sensor) and **Notify** (e.g. `notify.whatsapp`) for tank-low and stuck-valve alerts. Rain limit / Rain restore / Jojo low % now save as soon as you change them (previously only via 💾 Save). |
 | v3.0.1 | **FIX:** Tank low-level shutoff now requires the level to stay below the threshold for 2 minutes. Level sensors can glitch (e.g. 48% → 30% → 48% within seconds); a single bad reading used to cancel runs / switch the schedule off. |
 | v3.0.0 | **MAJOR — watering now runs inside Home Assistant.** Fixes: (1) a HA restart mid-schedule killed `script.sprinkler`, so the remaining zones never ran — runs now use a persistent queue and resume after a restart; (2) Manual Run relied on a browser `setTimeout`, so closing the dashboard, switching view or a sleeping phone left the zone on — every zone now has a restoring `timer.sprinkler_zone_N` and the auto-generated `automation.sprinkler_controller` closes the valve; zones switched on from the toggle or the Sonoff app now auto-stop too; (3) skip-list and manual-log helpers were created with an `initial` value, so HA wiped them on every restart — the card now repairs them; (4) cancelling a confirm popup left its OK handler attached, so the next confirm could also fire the cancelled action; (5) rain auto-restore only ran while a dashboard was open and could re-enable a schedule you (or the tank shutoff) had turned off; (6) rain/tank rules fired service calls every second from every open browser. Also: valve-close verify + retry with notification, per-minute watchdog, countdowns from HA timers, "Queued" badges, Last Run shows actual watered time from history, Manual Run duration no longer changes the scheduled duration. |
-| v2.9.75 | **FIX (correctness):** Last Run no longer assumes every configured zone ran. It now checks each zone's switch `last_changed` against the scheduled run's time window and only lists a zone under "Watered" if it actually toggled near that run. Zones with no activity near the run show separately under "No recent activity" with how long ago they last changed — surfaces zones that silently stopped running (e.g. toggled off) instead of hiding it. |
-| v2.9.74 | **NEW:** Manual run history now PERSISTS across page refreshes! Added `input_text.sprinkler_manual_log` helper (auto-created) that saves each manual run. Loaded automatically on card startup, so manual runs stay visible in Last Run even after reloading the page. |
-| v2.9.73 | Added manual run display back to Last Run. Shows both scheduled runs (with all zones) and recent manual runs (with 🔧 icon, duration, timestamp). Perfect combo! |
-| v2.9.72 | **COMPLETE REWRITE:** Last Run completely rewritten. Bulletproof fallback to script.sprinkler.last_triggered. Shows all configured zones + durations. Simple, direct, no fancy logic. This version WILL work! |
-| v2.9.71 | **FIX:** Last Run now simply shows all configured zones with durations, regardless of activity detection. No more complex filtering logic that missed zones. Shows what SHOULD have run based on config, not what activity detection thinks ran. Much more reliable! |
-| v2.9.70 | **REVERT:** Simplified Last Run back to v2.9.68 approach. Removed multi-run history feature (too complex). Now uses scheduler's last_triggered as fallback. Shows current + recent activity clearly. Coming back to this later with better implementation. |
-| v2.9.69 | Multi-run history feature (reverted) |
-| v2.9.68 | **POLISHED:** Last Run now clearly separates SCHEDULED RUNS from MANUAL RUNS. Scheduled zones show configured duration. Manual runs show a 🔧 icon and actual duration + timestamp. Crystal clear what was what! |
-| v2.9.67 | **IMPROVED:** Last Run now anchors to scheduler's last_triggered time instead of 2-hour window. Shows all zones that ran since last scheduled run. Detects activity up to 24 hours back. Much more reliable zone activity tracking! |
-| v2.9.66 | **NEW:** Last Run now shows duration! Manual runs display the duration you set (e.g., "12m • 1h ago"). Scheduled runs show configured duration from zone helpers. Fully tracks what each zone actually ran for. |
-| v2.9.65 | **HOTFIX:** Fixed syntax error in v2.9.64 (apostrophe in string). Card now loads without configuration error! |
-| v2.9.64 | **FIX:** Last Run now bulletproof with debug logging + fallback detection. Checks multiple attribute names, falls back to script.sprinkler. Shows zone activity timestamps in human-readable format (5m ago, 2h ago, etc). Check browser console for debug info if still not working. |
-| v2.9.63 | **MAJOR:** Zone modal now has BIG +/− buttons for duration adjustment. Manual zone runs now AUTO-STOP after the set time, then restore original duration. No more manual turn-off needed! |
-| v2.9.62 | **NEW:** Click any zone card to pop out zone details modal — shows status, duration, last activity, and quick turn on/off button. Brings back the zone expand feature! |
-| v2.9.61 | Added version footer to settings panel for easy version checking |
-| v2.9.60 | **COMPLETE REWRITE:** Last Run now bulletproof — reads from scheduler's `last_triggered` attribute instead of error-prone JSON storage. Detects zone activity from switch timestamps. No more "Could not read last run" errors! |
-| v2.9.59 | **HOTFIX:** Fixed Jinja template syntax in script delay — changed from `max()` filter to simpler `or 1` logic. Zones now properly execute with correct delays |
-| v2.9.58 | **FIX:** Zone runs now have minimum 1-minute delay (prevents stuck zones with 0-duration). UI now initializes with actual entity values instead of default 10 |
-| v2.9.57 | **NEW:** Smart Resume — on HA restart, detects running zones and resumes from elapsed time (prevents over-watering). Automatically stops zones that exceeded duration, lets others finish normally |
-| v2.9.56 | Fixed zone duration input increments — all zones now step by 1 minute (not 5) |
-| v2.9.55 | Automation rule descriptions now dynamically read config values after save — Jojo shutoff threshold, rain threshold, and rain restore hours show correct saved values |
-| v2.9.54 | Fixed time picker input width & height — no more cut-off numbers on desktop or mobile |
-| v2.9.53 | **NEW:** Time picker is now a beautiful popout modal with large hour/minute spinners — tap time → modal appears → adjust with ▲/▼ or type → tap Save to close and apply changes |
-| v2.9.52 | Fixed next-run countdown label — shows "in Xh Xm" instead of "Tonight" for clarity |
-| v2.9.51 | Replaced broken time picker with proper dual-spinner UI for desktop & mobile |
-| v2.9.50 and earlier | Foundational features: auto-created script/scheduler, zone grid with progress bars and duration steppers, per-zone schedule toggle and skip-next-run, rain auto-disable/auto-restore with seasonal hours, Jojo low-level shutoff, zone run order badges, manual zone timer with auto-stop, mobile-friendly time editor, drag-to-reorder zones, websocket-persisted settings, confirmation popups, and the original ring-buffer run history. See [full release history](../../releases) for the complete list. |
+| v2.9.51 – v2.9.75 | Zone popup with big ± buttons and auto-stopping Manual Run, persistent manual-run log, Last Run reworked several times (activity detection, durations, manual runs), popout time picker, 1-minute duration steps, smart resume after restart, version footer, and many small fixes. See the [release history](https://github.com/HybridRCG/sprinkler-dash-card/releases) for details. |
+| v2.9.50 and earlier | Foundational features: auto-created script/scheduler, zone grid with progress bars and duration steppers, per-zone schedule toggle and skip-next-run, rain auto-disable/auto-restore with seasonal hours, Jojo low-level shutoff, zone run order badges, manual zone timer with auto-stop, mobile-friendly time editor, drag-to-reorder zones, websocket-persisted settings, confirmation popups, and the original ring-buffer run history. See [full release history](https://github.com/HybridRCG/sprinkler-dash-card/releases) for the complete list. |
 | v2.0.0 | Auto-creates script and Scheduler; zone schedule toggle; sticky settings |
 | v1.0.0 | Initial release |
 

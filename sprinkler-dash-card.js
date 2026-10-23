@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.3.1';
+const CARD_VERSION = '3.3.2';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -941,7 +941,13 @@ class SprinklerDashCardV2 extends HTMLElement {
       const days = document.createElement('div'); days.className = 'sched-days';
       this._days.forEach((d, i) => {
         const b = document.createElement('div'); b.className = 'sday'; b.id = 'sday-' + row.n + '-' + d; b.textContent = this._dayLabels[i];
-        b.addEventListener('click', () => this._toggleDay(row.e, d));
+        b.addEventListener('click', () => {
+          if (!row.e) return;
+          const on = (this._hass.states[row.e]?.attributes?.weekdays || []).includes(d);
+          const day = ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'][i];
+          this._confirm(row.label, (on ? 'Stop watering on ' : 'Also water on ') + day + 's?', on ? 'confirm-btn--danger' : 'confirm-btn--ok')
+            .then(ok => { if (ok) this._toggleDay(row.e, d); });
+        });
         days.appendChild(b);
       });
       const tw = document.createElement('div'); tw.className = 'sched-time-wrap';
@@ -1308,11 +1314,9 @@ class SprinklerDashCardV2 extends HTMLElement {
         </ul>
 
         <h4>Step 2 — Create duration helpers</h4>
-        <p>Go to <b>Settings → Helpers → Add → Number</b> and create one per zone:</p>
+        <p>Go to <b>Settings → Helpers → Add → Number</b> and create one per zone (any name works, e.g. <code>input_number.valve_1_time</code>, <code>valve_2_time</code> … up to 12 zones):</p>
         <ul>
-          <li><code>input_number.valve_1_time</code> through <code>input_number.valve_8_time</code></li>
           <li>Settings: min 0, max 60, step 1, unit <b>min</b></li>
-          <li>Add up to <code>valve_10_time</code> if using more than 8 zones</li>
         </ul>
 
         <h4>Step 3 — Configure the card</h4>
@@ -1335,7 +1339,10 @@ class SprinklerDashCardV2 extends HTMLElement {
         <p>Tap the <b>calendar-remove</b> icon next to any zone name to mark it as skipped for the next run only. The zone gets an amber dashed border and shows "Skip next run". No confirmation needed — tap again to cancel. When the schedule (or Start Schedule) next runs, that zone is bypassed and the skip automatically clears itself — the helper for this is created by Set up.</p>
 
         <h4>Schedule section</h4>
-        <p>The toggle enables/disables the schedule. Tap day pills to toggle run days. Tap the time to edit it. The countdown shows when the schedule next fires.</p>
+        <p>The toggle enables/disables the schedule. Tap a day pill to add or remove that day (the card asks first when "Confirm before activating" is on). Tap the time to edit it. The countdown shows when the schedule next fires.</p>
+
+        <h4>Second schedule (optional)</h4>
+        <p>Create it from the gear panel, pick it as <b>Schedule 2 sw</b> in the card editor and press <b>Review update…</b>. It gets its own days, time and minutes per zone: tap a zone to set its schedule-2 minutes, <b>Same</b> to use the schedule-1 minutes, or <b>Skip</b> to leave that zone out. Each schedule shows under its Scheduler name and gets its own Start button.</p>
         </div>
       </div>
     </div>
@@ -1785,7 +1792,7 @@ class SprinklerDashCardV2 extends HTMLElement {
 
     // jojo low %
     const jlRow=document.createElement('div'); jlRow.className='cfg-field-row';
-    const jlLbl=document.createElement('label'); jlLbl.className='cfg-field-lbl'; jlLbl.textContent='Jojo low %';
+    const jlLbl=document.createElement('label'); jlLbl.className='cfg-field-lbl'; jlLbl.textContent='Tank low %';
     const jlInp=document.createElement('input'); jlInp.type='number'; jlInp.className='cfg-field-input';
     jlInp.value=this._cfg.jojo_low_pct||35; jlInp.placeholder='35'; jlInp.min=0; jlInp.max=100;
     jlInp.dataset.cfgKey='jojo_low_pct';
@@ -1818,7 +1825,7 @@ class SprinklerDashCardV2 extends HTMLElement {
     ntRow.append(ntLbl,ntInp); slist.appendChild(ntRow);
 
     // entity fields
-    [{label:'Rain sensor',key:'rain_sensor',val:this._cfg.rain_sensor||''},{label:'Weather',key:'weather_entity',val:this._cfg.weather_entity||''},{label:'Jojo sensor',key:'jojo_sensor',val:this._cfg.jojo_sensor||''},{label:'Jojo level %',key:'jojo_level_sensor',val:this._cfg.jojo_level_sensor||''},{label:'Schedule sw',key:'schedule_entity',val:this._cfg.schedule_entity||''},{label:'Schedule 2 sw',key:'schedule_entity_2',val:this._cfg.schedule_entity_2||''}]
+    [{label:'Rain sensor',key:'rain_sensor',val:this._cfg.rain_sensor||''},{label:'Weather',key:'weather_entity',val:this._cfg.weather_entity||''},{label:'Tank litres',key:'jojo_sensor',val:this._cfg.jojo_sensor||''},{label:'Tank level %',key:'jojo_level_sensor',val:this._cfg.jojo_level_sensor||''},{label:'Schedule sw',key:'schedule_entity',val:this._cfg.schedule_entity||''},{label:'Schedule 2 sw',key:'schedule_entity_2',val:this._cfg.schedule_entity_2||''}]
     .forEach(f=>{
       const row=document.createElement('div'); row.className='cfg-field-row';
       const lbl=document.createElement('label'); lbl.className='cfg-field-lbl'; lbl.textContent=f.label;
@@ -1923,7 +1930,7 @@ class SprinklerDashCardV2 extends HTMLElement {
       },
       {
         key:'jojo_shutoff_zones',
-        title:'Jojo: Low-level zone shutoff',
+        title:'Tank: Low-level zone shutoff',
         desc:`If tank level drops below ${this._cfg.jojo_low_pct||35}%, all running zones are switched off and scheduled runs are cancelled. Runs in HA even with no dashboard open.`,
       },
     ];
