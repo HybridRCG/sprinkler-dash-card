@@ -1,4 +1,4 @@
-const CARD_VERSION = '3.3.2';
+const CARD_VERSION = '3.3.3';
 const MAX_ZONES = 12;
 // ── Server-side engine ──────────────────────────────────────────────
 // Everything that must keep working when no browser is open (or when HA
@@ -2344,12 +2344,36 @@ class SprinklerDashCardV2 extends HTMLElement {
     if (!e) return;
     const cur=this._hass.states[e]?.attributes?.weekdays||[];
     const next=cur.includes(day)?cur.filter(d=>d!==day):[...cur,day];
-    this._svc('scheduler','edit',{entity_id:e,weekdays:next});
+    this._editSchedule(e,{weekdays:next});
   }
 
   _saveTime(e, ts) {
     if (!e) return;
-    this._svc('scheduler','edit',{entity_id:e,timeslots:[{start:ts+':00',actions:[{service:'script.turn_on',entity_id:this._scriptFor(e)}]}]});
+    this._editSchedule(e,{timeslots:[{start:ts+':00',actions:[{service:'script.turn_on',entity_id:this._scriptFor(e)}]}]});
+  }
+
+  _waitUntil(fn, ms) {
+    return new Promise(resolve => {
+      const t0 = Date.now();
+      const tick = () => { if (fn() || Date.now() - t0 >= ms) resolve(); else setTimeout(tick, 200); };
+      tick();
+    });
+  }
+
+  // scheduler.edit switches the schedule back ON. If it was off (rain pause, or switched off by hand),
+  // put it back off and restore the rain pause the controller's sched_on branch just cleared.
+  async _editSchedule(e, data) {
+    const wasOff = this._hass.states[e]?.state === 'off';
+    const pause = this._hass.states[RAIN_PAUSE_E]?.state || '';
+    const hadPause = !['', 'unknown', 'unavailable'].includes(pause);
+    await this._hass.callService('scheduler', 'edit', { entity_id: e, ...data });
+    if (!wasOff) return;
+    await this._waitUntil(() => this._hass.states[e]?.state === 'on', 5000);
+    if (this._hass.states[e]?.state === 'on') await this._hass.callService('switch', 'turn_off', { entity_id: e });
+    if (hadPause) {
+      await this._waitUntil(() => (this._hass.states[RAIN_PAUSE_E]?.state || '') !== pause, 3000);
+      await this._hass.callService('input_text', 'set_value', { entity_id: RAIN_PAUSE_E, value: pause });
+    }
   }
 
   _update() { this._updateMeta(); this._updateZones(); this._updateSchedule(); }
