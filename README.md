@@ -4,8 +4,8 @@
 
 A fully self-contained smart irrigation dashboard card for Home Assistant. Zero YAML scripting required — install the card, create your zone duration helpers, configure it in the card editor, and press **Set up** once to create the script and automation that do the watering.
 
-![Version](https://img.shields.io/badge/version-v3.3.3-green)
-![HACS](https://img.shields.io/badge/HACS-Default-orange)
+![Version](https://img.shields.io/badge/version-v3.3.4-green)
+![Marketplace](https://img.shields.io/badge/HA%20Marketplace-Listed-orange)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2024.10%2B-blue)
 ![License](https://img.shields.io/github/license/HybridRCG/sprinkler-dash-card)
 
@@ -100,21 +100,23 @@ A fully self-contained smart irrigation dashboard card for Home Assistant. Zero 
 ## Requirements
 
 - Home Assistant 2024.10 or newer (the generated automation uses the current `triggers:` / `actions:` syntax)
-- [Scheduler Component](https://github.com/nielsfaber/scheduler-component) integration (via HACS)
+- [Scheduler Component](https://github.com/nielsfaber/scheduler-component) integration (via the Home Assistant Marketplace)
 - One `input_number` helper per zone for duration (see Step 2)
 
 ---
 
 ## Installation
 
-### Option 1: HACS (Recommended)
+### Option 1: Home Assistant Marketplace (Recommended)
 
-Sprinkler Dash Card is in the HACS default store.
+Sprinkler Dash Card is listed in the **Home Assistant Marketplace** — the built-in community store that replaced HACS in Home Assistant 2026.11.
 
-1. Open **HACS** in Home Assistant
+1. Go to **Settings → Marketplace** (administrator only)
 2. Search for **Sprinkler Dash Card**
 3. Click **Download**
 4. **Hard refresh** your browser (Ctrl+Shift+R on Windows, Cmd+Shift+R on Mac)
+
+Updates show up under **Settings → Updates** alongside Home Assistant's own updates.
 
 Then add the card from the dashboard card picker, or with:
 ```yaml
@@ -122,11 +124,16 @@ type: custom:sprinkler-dash-card-v2
 ```
 
 <details>
-<summary>Card not showing up in the HACS search? Add it as a custom repository</summary>
+<summary>Already installed it through HACS?</summary>
 
-1. In HACS, click the **⋮** menu (top right) → **Custom repositories**
-2. Paste `https://github.com/HybridRCG/sprinkler-dash-card`, select **Dashboard** as the type, and click **Add**
-3. Search for **Sprinkler Dash Card** and click **Download**
+Nothing to do. When Home Assistant 2026.11 or newer first starts, it migrates your HACS installs into the Marketplace automatically — the card, its dashboard resource and its update entity carry over, and you keep getting updates.
+
+</details>
+
+<details>
+<summary>On Home Assistant older than 2026.11?</summary>
+
+Install it from **HACS** instead: open HACS, search for **Sprinkler Dash Card** and click **Download**. If it doesn't appear, add `https://github.com/HybridRCG/sprinkler-dash-card` under HACS **⋮ → Custom repositories** with type **Dashboard**.
 
 </details>
 
@@ -177,7 +184,7 @@ Any names work — these are just examples. Create up to 12 for up to 12 zones.
 
 ### Step 3 — Install Scheduler Component
 
-Install **[Scheduler Component](https://github.com/nielsfaber/scheduler-component)** via HACS (Integration category).
+Install **[Scheduler Component](https://github.com/nielsfaber/scheduler-component)** from **Settings → Marketplace** (Integration category), or from HACS on Home Assistant older than 2026.11.
 
 Set up (Step 8) can create a schedule for `script.sprinkler` for you. Adjust the run days and time directly on the card's Schedule section.
 
@@ -278,6 +285,7 @@ Tap **Last Run** to see what happened during the most recent scheduled run.
 
 | Version | Changes |
 |---|---|
+| v3.3.4 | Now listed in the **Home Assistant Marketplace** (HACS became the built-in Marketplace in Home Assistant 2026.11). Install instructions, badges and the card's setup hints point to **Settings → Marketplace**; HACS instructions kept for older Home Assistant versions. No functional changes. |
 | v3.3.2 | Day pills ask before adding or removing a day (when *Confirm before activating* is on), so a stray tap can no longer silently drop a run day. Tank settings are labelled **Tank** instead of *Jojo* (your saved settings are unchanged). README images now show in HACS, minimum Home Assistant version corrected to 2024.10, docs brought up to date. |
 | v3.3.1 | With two schedules the header shows **one Start button per schedule** plus Last Run, all equal width (a running schedule turns them into one Stop). Schedule names now come from the **Scheduler switches' own names** (the editor name fields are gone). **Skip** button for schedule-2 minutes in the zone popup. |
 | v3.3.0 | **NEW: schedule 2 has its own minutes per zone.** Set them in each zone's popup (*Same* = use schedule-1 minutes, *0* = skip that zone on schedule 2); the tile shows them. Stored in one helper (`input_text.sprinkler_durations_2`) keyed by zone, so values follow a zone when you reorder. Schedule 2 runs its own `script.sprinkler_2`; Set up creates it plus the helper and points schedule 2 at it (days/times kept). Last Run shows which schedule ran and compares against that schedule's minutes. Also: the card now tells HA how it sizes in sections layouts (no more "does not fully support resizing" note). Single-schedule setups are unchanged. |
